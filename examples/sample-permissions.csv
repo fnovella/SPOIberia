@@ -1,0 +1,5 @@
+Library,RelativeFolderPath,CopyParentRoles,ClearSubscopes,Group,Role,CreateGroupIfMissing
+Documentos,01_Direccion,false,false,SPO_Direccion_Lectura,Read,true
+Documentos,01_Direccion,false,false,SPO_Direccion_Edicion,Edit,true
+Documentos,01_Direccion/Confidencial,false,false,SPO_Comite_Ejecutivo,Full Control,true
+Documentos,02_Ingenieria,false,false,SPO_Ingenieria_Colaboradores,Contribute,true

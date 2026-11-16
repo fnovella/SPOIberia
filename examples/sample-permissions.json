@@ -1,0 +1,36 @@
+[
+  {
+    "Library": "Documentos",
+    "RelativeFolderPath": "01_Direccion",
+    "CopyParentRoles": false,
+    "ClearSubscopes": false,
+    "Permissions": [
+      {
+        "Group": "SPO_Direccion_Lectura",
+        "PrincipalType": "SharePointGroup",
+        "Role": "Read",
+        "CreateGroupIfMissing": true
+      },
+      {
+        "Group": "SPO_Direccion_Edicion",
+        "PrincipalType": "SharePointGroup",
+        "Role": "Edit",
+        "CreateGroupIfMissing": true
+      }
+    ]
+  },
+  {
+    "Library": "Documentos",
+    "RelativeFolderPath": "01_Direccion/Confidencial",
+    "CopyParentRoles": false,
+    "ClearSubscopes": false,
+    "Permissions": [
+      {
+        "Group": "SPO_Comite_Ejecutivo",
+        "PrincipalType": "SharePointGroup",
+        "Role": "Full Control",
+        "CreateGroupIfMissing": true
+      }
+    ]
+  }
+]

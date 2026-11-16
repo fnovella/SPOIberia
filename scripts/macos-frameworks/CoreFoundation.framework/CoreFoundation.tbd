@@ -1,0 +1,21 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ x86_64-macos, arm64-macos ]
+install-name:    '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
+exports:
+  - targets:         [ x86_64-macos, arm64-macos ]
+    symbols:         [ ___CFConstantStringClassReference, _kCFAllocatorDefault, _kCFAllocatorNull,
+                       _kCFTypeArrayCallBacks, _kCFTypeDictionaryKeyCallBacks, _kCFTypeDictionaryValueCallBacks,
+                       _CFRelease, _CFRetain, _CFEqual, _CFGetTypeID,
+                       _CFStringCreateWithBytes, _CFStringCreateWithBytesNoCopy, _CFStringGetLength,
+                       _CFStringGetBytes, _CFStringGetCStringPtr, _CFStringGetCharactersPtr, _CFStringGetTypeID,
+                       _CFDictionaryGetValue, _CFDictionaryGetValueIfPresent, _CFDictionaryCreate,
+                       _CFDictionaryGetCount, _CFDictionaryGetKeysAndValues, _CFDictionaryGetTypeID,
+                       _CFArrayGetCount, _CFArrayGetValueAtIndex, _CFArrayGetTypeID, _CFArrayCreate,
+                       _CFNumberGetValue, _CFNumberGetTypeID, _CFNumberCreate,
+                       _CFBooleanGetValue, _CFBooleanGetTypeID, _kCFBooleanTrue, _kCFBooleanFalse,
+                       _CFDataGetBytePtr, _CFDataGetLength, _CFDataCreate,
+                       _CFErrorGetCode, _CFErrorCopyDescription,
+                       _CFTimeZoneCopySystem, _CFTimeZoneGetName,
+                       _CFURLCreateWithFileSystemPath, _CFURLCreateWithString ]
+...

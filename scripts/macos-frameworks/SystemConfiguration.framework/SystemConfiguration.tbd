@@ -1,0 +1,13 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ x86_64-macos, arm64-macos ]
+install-name:    '/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration'
+exports:
+  - targets:         [ x86_64-macos, arm64-macos ]
+    symbols:         [ _SCDynamicStoreCopyProxies, _SCDynamicStoreCreate, _SCDynamicStoreCreateWithOptions,
+                       _SCDynamicStoreCopyValue, _kSCDynamicStoreUseSessionKeys,
+                       _SCError, _SCErrorString,
+                       _kSCPropNetProxiesHTTPEnable, _kSCPropNetProxiesHTTPProxy, _kSCPropNetProxiesHTTPPort,
+                       _kSCPropNetProxiesHTTPSEnable, _kSCPropNetProxiesHTTPSProxy, _kSCPropNetProxiesHTTPSPort,
+                       _kSCPropNetProxiesExceptionsList, _kSCPropNetProxiesExcludeSimpleHostnames ]
+...
