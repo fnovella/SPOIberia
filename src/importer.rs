@@ -347,7 +347,7 @@ Documentos,01_Management/SubA,false,false,SPO_SubA,Contribute,true
         assert_eq!(specs[2].relative_folder_path, "01_Management/SubA/Deep");
 
         let queue = MatrixImporter::specs_to_staging_queue(
-            "https://acciona365.sharepoint.com/sites/Test",
+            "https://contoso.sharepoint.com/sites/Test",
             &specs,
         );
         // 4 unique groups + 3 folders + 3 break inheritance + 4 role assignments = 14 ops

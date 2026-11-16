@@ -338,8 +338,8 @@ mod tests {
         let db = Database::open_in_memory().expect("in-memory sqlite");
         let tx_id = db
             .create_transaction(
-                "admin@acciona.com",
-                "https://acciona365.sharepoint.com/sites/Obra1",
+                "admin@contoso.com",
+                "https://contoso.sharepoint.com/sites/Obra1",
                 "Obra 1",
                 "CLI",
                 Some("Alta inicial"),
@@ -348,10 +348,10 @@ mod tests {
             .unwrap();
 
         let rev = ReversePayload::RemoveAddedUser {
-            site_url: "https://acciona365.sharepoint.com/sites/Obra1".to_string(),
+            site_url: "https://contoso.sharepoint.com/sites/Obra1".to_string(),
             group_id: 5,
             user_id: Some(14),
-            login_name: "i:0#.f|membership|user1@acciona.com".to_string(),
+            login_name: "i:0#.f|membership|user1@contoso.com".to_string(),
         };
 
         let op_id = db
@@ -360,7 +360,7 @@ mod tests {
                 1,
                 "ADD_USER_TO_GROUP",
                 "Añadir user1 a Owners",
-                r#"{"user":"user1@acciona.com"}"#,
+                r#"{"user":"user1@contoso.com"}"#,
                 &rev,
                 "APPLIED",
                 None,

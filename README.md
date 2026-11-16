@@ -59,18 +59,18 @@ spoiberia auth login [--device-code]
 
 # 2. Listar o verificar sitios donde eres Admin o Propietario
 spoiberia sites list --json
-spoiberia sites check --site "https://acciona365.sharepoint.com/sites/MiSitio" --json
+spoiberia sites check --site "https://contoso.sharepoint.com/sites/MiSitio" --json
 
 # 3. Grupos y miembros
-spoiberia groups list --site "https://acciona365.sharepoint.com/sites/MiSitio" --json
-spoiberia groups members --site "https://acciona365.sharepoint.com/sites/MiSitio" --group "MiSitio Members" --json
+spoiberia groups list --site "https://contoso.sharepoint.com/sites/MiSitio" --json
+spoiberia groups members --site "https://contoso.sharepoint.com/sites/MiSitio" --group "MiSitio Members" --json
 spoiberia users search --query "novella" --json
 
 # 4. Asignar o remover usuarios (generando transacción reversible en SQLite)
 spoiberia members add \
-  --site "https://acciona365.sharepoint.com/sites/MiSitio" \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --group "MiSitio Members" \
-  --users "usuario1@acciona.com,usuario2@acciona.com" \
+  --users "usuario1@contoso.com,usuario2@contoso.com" \
   --note "Alta solicitada por agente" \
   --dry-run --json
 
@@ -81,7 +81,7 @@ spoiberia tx revert 1 --json
 
 # 6. Fase 2: Bibliotecas, Carpetas y Matriz Externa (CSV / JSON)
 spoiberia folders grant \
-  --site "https://acciona365.sharepoint.com/sites/MiSitio" \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --library "Documentos" \
   --path "01_Direccion/Confidencial" \
   --group "SPO_Comite_Ejecutivo" \
@@ -90,19 +90,19 @@ spoiberia folders grant \
   --dry-run --json
 
 spoiberia matrix apply \
-  --site "https://acciona365.sharepoint.com/sites/MiSitio" \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --file ./examples/sample-permissions.csv \
   --dry-run --json
 
 spoiberia matrix export \
-  --site "https://acciona365.sharepoint.com/sites/MiSitio" \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --library "Documentos" \
   --out ./permisos-exportados.json
 
 # 7. Fase 3: Clonado Completo de un SharePoint en otro
 spoiberia clone \
-  --source-site "https://acciona365.sharepoint.com/sites/PlantillaObra" \
-  --target-site "https://acciona365.sharepoint.com/sites/NuevaObra" \
+  --source-site "https://contoso.sharepoint.com/sites/PlantillaObra" \
+  --target-site "https://contoso.sharepoint.com/sites/NuevaObra" \
   --dry-run --json
 ```
 

@@ -801,17 +801,17 @@ mod tests {
     #[test]
     fn test_staging_queue_neutralization() {
         let mut q = StagingQueue::new();
-        let site = "https://acciona365.sharepoint.com/sites/Test";
+        let site = "https://contoso.sharepoint.com/sites/Test";
 
         q.push(StagingOp::AddUserToGroup {
             site_url: site.to_string(),
             group_id: 7,
             group_title: "Owners".to_string(),
-            user_identifier: "ana@acciona.com".to_string(),
+            user_identifier: "ana@contoso.com".to_string(),
             user_display_name: "Ana".to_string(),
         });
         assert_eq!(q.len(), 1);
-        assert_eq!(q.user_group_staging_state(site, 7, "ana@acciona.com"), Some(true));
+        assert_eq!(q.user_group_staging_state(site, 7, "ana@contoso.com"), Some(true));
 
         // Now push the opposite operation (Remove) for the same user & group -> should neutralize
         q.push(StagingOp::RemoveUserFromGroup {
@@ -819,10 +819,10 @@ mod tests {
             group_id: 7,
             group_title: "Owners".to_string(),
             user_id: None,
-            user_identifier: "ana@acciona.com".to_string(),
+            user_identifier: "ana@contoso.com".to_string(),
             user_display_name: "Ana".to_string(),
         });
         assert!(q.is_empty());
-        assert_eq!(q.user_group_staging_state(site, 7, "ana@acciona.com"), None);
+        assert_eq!(q.user_group_staging_state(site, 7, "ana@contoso.com"), None);
     }
 }

@@ -1002,7 +1002,7 @@ mod tests {
                             {
                                 "Cells": [
                                     {"Key": "Title", "Value": "Obra Madrid Norte"},
-                                    {"Key": "Path", "Value": "https://acciona365.sharepoint.com/sites/ObraMadridNorte/"},
+                                    {"Key": "Path", "Value": "https://contoso.sharepoint.com/sites/ObraMadridNorte/"},
                                     {"Key": "Description", "Value": "Sitio de obra"}
                                 ]
                             }
@@ -1016,7 +1016,7 @@ mod tests {
         assert_eq!(rows[0].0, "Obra Madrid Norte");
         assert_eq!(
             rows[0].1,
-            "https://acciona365.sharepoint.com/sites/ObraMadridNorte"
+            "https://contoso.sharepoint.com/sites/ObraMadridNorte"
         );
         assert_eq!(rows[0].2.as_deref(), Some("Sitio de obra"));
     }

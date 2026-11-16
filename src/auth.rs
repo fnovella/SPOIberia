@@ -433,7 +433,7 @@ impl AuthManager {
         Err(anyhow!("El código de dispositivo ha expirado"))
     }
 
-    /// Obtain a valid access token for a given resource base URL (e.g. `https://graph.microsoft.com` or `https://acciona365.sharepoint.com`).
+    /// Obtain a valid access token for a given resource base URL (e.g. `https://graph.microsoft.com` or `https://contoso.sharepoint.com`).
     pub async fn get_token_for_resource(&self, resource_origin: &str) -> Result<String> {
         let normalized = resource_origin.trim_end_matches('/').to_string();
         let mut session = self
