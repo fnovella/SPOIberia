@@ -204,6 +204,22 @@ pub struct App {
     pub selected_tx_idx: usize,
     pub selected_tx_ops: Vec<TransactionOpRecord>,
     pub selected_tx_op_idx: usize,
+
+    // Per-panel vertical scroll offsets updated dynamically during rendering
+    pub scroll: ScrollOffsets,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ScrollOffsets {
+    pub sites: std::cell::Cell<usize>,
+    pub groups: std::cell::Cell<usize>,
+    pub members: std::cell::Cell<usize>,
+    pub libraries: std::cell::Cell<usize>,
+    pub folders: std::cell::Cell<usize>,
+    pub staging: std::cell::Cell<usize>,
+    pub transactions: std::cell::Cell<usize>,
+    pub tx_ops: std::cell::Cell<usize>,
+    pub modal_users: std::cell::Cell<usize>,
 }
 
 impl App {
@@ -273,6 +289,7 @@ impl App {
             selected_tx_idx: 0,
             selected_tx_ops: Vec::new(),
             selected_tx_op_idx: 0,
+            scroll: ScrollOffsets::default(),
         };
 
         if app.screen == Screen::SiteSelector {

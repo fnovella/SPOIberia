@@ -6,9 +6,148 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Row, Table, Tabs, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table, TableState, Tabs, Wrap,
+    },
     Frame,
 };
+use std::cell::Cell;
+
+pub fn sync_scroll_offset(
+    offset_cell: &Cell<usize>,
+    total_items: usize,
+    selected_idx: usize,
+    viewport_rows: usize,
+) -> (usize, bool) {
+    if total_items == 0 || viewport_rows == 0 || total_items <= viewport_rows {
+        offset_cell.set(0);
+        return (0, false);
+    }
+    let selected = selected_idx.min(total_items - 1);
+    let mut offset = offset_cell.get();
+    if selected < offset {
+        offset = selected;
+    } else if selected >= offset + viewport_rows {
+        offset = selected + 1 - viewport_rows;
+    }
+    let max_offset = total_items.saturating_sub(viewport_rows);
+    offset = offset.min(max_offset);
+    offset_cell.set(offset);
+    (offset, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_vertical_scrollbar(
+    f: &mut Frame<'_>,
+    area: Rect,
+    top_inset: u16,
+    bottom_inset: u16,
+    total_items: usize,
+    viewport_rows: usize,
+    offset: usize,
+    is_focused: bool,
+) {
+    let height = area
+        .height
+        .saturating_sub(top_inset.saturating_add(bottom_inset));
+    if area.width == 0 || height < 2 {
+        return;
+    }
+    let sb_area = Rect {
+        x: area.x,
+        y: area.y.saturating_add(top_inset),
+        width: area.width,
+        height,
+    };
+    let color = if is_focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"))
+        .track_symbol(Some("│"))
+        .thumb_symbol("█")
+        .style(Style::default().fg(color));
+    let mut sb_state = ScrollbarState::new(
+        total_items.saturating_sub(viewport_rows).saturating_add(1),
+    )
+    .position(offset)
+    .viewport_content_length(viewport_rows);
+    f.render_stateful_widget(scrollbar, sb_area, &mut sb_state);
+}
+
+fn render_scrollable_list(
+    f: &mut Frame<'_>,
+    list: List<'_>,
+    area: Rect,
+    offset_cell: &Cell<usize>,
+    total_items: usize,
+    selected_idx: usize,
+    is_focused: bool,
+) {
+    let viewport_rows = area.height.saturating_sub(2) as usize;
+    let (offset, show_scrollbar) =
+        sync_scroll_offset(offset_cell, total_items, selected_idx, viewport_rows);
+    let selected = if total_items > 0 {
+        Some(selected_idx.min(total_items - 1))
+    } else {
+        None
+    };
+    let mut state = ListState::default()
+        .with_offset(offset)
+        .with_selected(selected);
+    f.render_stateful_widget(list, area, &mut state);
+    if show_scrollbar {
+        render_vertical_scrollbar(
+            f,
+            area,
+            1,
+            1,
+            total_items,
+            viewport_rows,
+            offset,
+            is_focused,
+        );
+    }
+}
+
+fn render_scrollable_table(
+    f: &mut Frame<'_>,
+    table: Table<'_>,
+    area: Rect,
+    offset_cell: &Cell<usize>,
+    total_items: usize,
+    selected_idx: usize,
+    is_focused: bool,
+) {
+    let viewport_rows = area.height.saturating_sub(4) as usize;
+    let (offset, show_scrollbar) =
+        sync_scroll_offset(offset_cell, total_items, selected_idx, viewport_rows);
+    let selected = if total_items > 0 {
+        Some(selected_idx.min(total_items - 1))
+    } else {
+        None
+    };
+    let mut state = TableState::default()
+        .with_offset(offset)
+        .with_selected(selected);
+    f.render_stateful_widget(table, area, &mut state);
+    if show_scrollbar {
+        render_vertical_scrollbar(
+            f,
+            area,
+            3,
+            1,
+            total_items,
+            viewport_rows,
+            offset,
+            is_focused,
+        );
+    }
+}
 
 pub fn draw_ui(f: &mut Frame<'_>, app: &App) {
     let chunks = Layout::default()
@@ -171,6 +310,7 @@ fn draw_site_selector(f: &mut Frame<'_>, app: &App, area: Rect) {
         )
         .bottom_margin(1);
 
+    let total_rows = filtered.len();
     let rows: Vec<Row<'_>> = filtered
         .iter()
         .enumerate()
@@ -216,7 +356,15 @@ fn draw_site_selector(f: &mut Frame<'_>, app: &App, area: Rect) {
             .border_style(Style::default().fg(Color::Cyan)),
     );
 
-    f.render_widget(table, area);
+    render_scrollable_table(
+        f,
+        table,
+        area,
+        &app.scroll.sites,
+        total_rows,
+        app.selected_site_idx,
+        true,
+    );
 }
 
 fn draw_site_workspace(f: &mut Frame<'_>, app: &App, area: Rect) {
@@ -342,7 +490,15 @@ fn draw_tab_groups_and_users(f: &mut Frame<'_>, app: &App, area: Rect) {
         } else {
             Color::DarkGray
         }));
-    f.render_widget(List::new(group_items).block(groups_block), panes[0]);
+    render_scrollable_list(
+        f,
+        List::new(group_items).block(groups_block),
+        panes[0],
+        &app.scroll.groups,
+        app.groups.len(),
+        app.selected_group_idx,
+        left_focused,
+    );
 
     // Right Pane: Group Members + Pending Staged Additions/Removals
     let right_focused = app.focus == PaneFocus::Right;
@@ -421,6 +577,13 @@ fn draw_tab_groups_and_users(f: &mut Frame<'_>, app: &App, area: Rect) {
         );
     }
 
+    let total_rows = rows.len();
+    let sel_row = if app.group_members.is_empty() {
+        0
+    } else {
+        staged_adds.len() + app.selected_member_idx
+    };
+
     let members_table = Table::new(
         rows,
         [
@@ -455,7 +618,15 @@ fn draw_tab_groups_and_users(f: &mut Frame<'_>, app: &App, area: Rect) {
             })),
     );
 
-    f.render_widget(members_table, panes[1]);
+    render_scrollable_table(
+        f,
+        members_table,
+        panes[1],
+        &app.scroll.members,
+        total_rows,
+        sel_row,
+        right_focused,
+    );
 }
 
 fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
@@ -505,7 +676,15 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
         } else {
             Color::DarkGray
         }));
-    f.render_widget(List::new(lib_items).block(lib_block), panes[0]);
+    render_scrollable_list(
+        f,
+        List::new(lib_items).block(lib_block),
+        panes[0],
+        &app.scroll.libraries,
+        app.libraries.len(),
+        app.selected_library_idx,
+        left_focused,
+    );
 
     let current_lib = app
         .selected_library()
@@ -593,7 +772,15 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
             })),
     );
 
-    f.render_widget(folders_table, panes[1]);
+    render_scrollable_table(
+        f,
+        folders_table,
+        panes[1],
+        &app.scroll.folders,
+        app.folders.len(),
+        app.selected_folder_idx,
+        right_focused,
+    );
 }
 
 fn draw_tab_clone_site(f: &mut Frame<'_>, app: &App, area: Rect) {
@@ -743,7 +930,15 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
         } else {
             Color::DarkGray
         }));
-    f.render_widget(List::new(staging_items).block(staging_block), panes[0]);
+    render_scrollable_list(
+        f,
+        List::new(staging_items).block(staging_block),
+        panes[0],
+        &app.scroll.staging,
+        app.staging.len(),
+        app.selected_staging_idx,
+        left_focused,
+    );
 
     // Right: SQLite Transactions History + Selected Transaction Operations
     let right_split = Layout::default()
@@ -814,7 +1009,15 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
                 Color::DarkGray
             })),
     );
-    f.render_widget(tx_table, right_split[0]);
+    render_scrollable_table(
+        f,
+        tx_table,
+        right_split[0],
+        &app.scroll.transactions,
+        app.transactions.len(),
+        app.selected_tx_idx,
+        right_focused,
+    );
 
     let op_items: Vec<ListItem<'_>> = app
         .selected_tx_ops
@@ -843,7 +1046,15 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray));
-    f.render_widget(List::new(op_items).block(ops_block), right_split[1]);
+    render_scrollable_list(
+        f,
+        List::new(op_items).block(ops_block),
+        right_split[1],
+        &app.scroll.tx_ops,
+        app.selected_tx_ops.len(),
+        app.selected_tx_op_idx,
+        right_focused,
+    );
 }
 
 fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
@@ -1059,7 +1270,15 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan));
-            f.render_widget(List::new(items).block(list_block), chunks[1]);
+            render_scrollable_list(
+                f,
+                List::new(items).block(list_block),
+                chunks[1],
+                &app.scroll.modal_users,
+                results.len(),
+                *selected_idx,
+                true,
+            );
 
             let help_block = Block::default()
                 .borders(Borders::ALL)
@@ -1244,4 +1463,106 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::graph::GraphClient;
+    use crate::api::spo::SpoClient;
+    use crate::app::{App, Screen};
+    use crate::auth::AuthManager;
+    use crate::db::Database;
+    use crate::models::{SiteRole, SpoSite};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn make_test_app() -> App {
+        let tmp_cfg = std::env::temp_dir().join(format!(
+            "spoiberia-ui-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp_cfg);
+        std::env::set_var("SPOIBERIA_CONFIG_DIR", &tmp_cfg);
+
+        let auth = AuthManager::new().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let graph = GraphClient::new(auth.clone()).unwrap();
+        let spo = SpoClient::new(auth.clone()).unwrap();
+        let app = App::new(auth, db, graph, spo);
+        let _ = std::fs::remove_dir_all(&tmp_cfg);
+        app
+    }
+
+    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn right_column_symbols(buf: &ratatui::buffer::Buffer) -> String {
+        let x = buf.area.width.saturating_sub(1);
+        (0..buf.area.height)
+            .map(|y| buf[(x, y)].symbol())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn test_dynamic_scrollbar_on_overflow_and_resize() {
+        let mut app = make_test_app();
+        app.screen = Screen::SiteSelector;
+        app.sites = (0..20)
+            .map(|i| SpoSite {
+                title: format!("Site {:02}", i),
+                url: format!("https://contoso.sharepoint.com/sites/site{:02}", i),
+                description: None,
+                role: SiteRole::SiteAdmin,
+                is_site_admin: true,
+            })
+            .collect();
+
+        // 80x16 => header(3) + main(10) + footer(3); table viewport_rows = 10 - 4 = 6 < 20
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let right_col = right_column_symbols(terminal.backend().buffer());
+        assert!(right_col.contains('▲'), "expected top scrollbar arrow in {right_col:?}");
+        assert!(right_col.contains('▼'), "expected bottom scrollbar arrow in {right_col:?}");
+        assert!(right_col.contains('█'), "expected scrollbar thumb in {right_col:?}");
+
+        // Scroll selection down to index 18 -> must bring "Site 18" into view (rows 13..=18)
+        app.selected_site_idx = 18;
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        assert_eq!(app.scroll.sites.get(), 13);
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Site 13"));
+        assert!(rendered.contains("Site 18"));
+        assert!(!rendered.contains("Site 00"));
+        assert!(!rendered.contains("Site 19"));
+
+        // Resize taller to 80x35 => main(29), viewport_rows = 25 >= 20 -> scrollbar must disappear
+        terminal.backend_mut().resize(80, 35);
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        assert_eq!(app.scroll.sites.get(), 0);
+        let right_col_tall = right_column_symbols(terminal.backend().buffer());
+        assert!(!right_col_tall.contains('▲'));
+        assert!(!right_col_tall.contains('▼'));
+        let rendered_tall = buffer_text(terminal.backend().buffer());
+        assert!(rendered_tall.contains("Site 00"));
+        assert!(rendered_tall.contains("Site 19"));
+
+        // Resize back down to 80x16 -> scrollbar must reappear dynamically
+        terminal.backend_mut().resize(80, 16);
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let right_col_small_again = right_column_symbols(terminal.backend().buffer());
+        assert!(right_col_small_again.contains('▲'));
+        assert!(right_col_small_again.contains('▼'));
+        assert_eq!(app.scroll.sites.get(), 13);
+    }
 }

@@ -142,21 +142,35 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn move_list_index(current: usize, len: usize, code: KeyCode) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    match code {
+        KeyCode::Down | KeyCode::Char('j') => (current + 1) % len,
+        KeyCode::Up | KeyCode::Char('k') => current.checked_sub(1).unwrap_or(len - 1),
+        KeyCode::PageDown => (current + 10).min(len - 1),
+        KeyCode::PageUp => current.saturating_sub(10),
+        KeyCode::Home => 0,
+        KeyCode::End => len - 1,
+        _ => current,
+    }
+}
+
 fn handle_site_selector_keys(app: &mut App, key: KeyEvent) {
     let total = app.filtered_sites().len();
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down
+        | KeyCode::Char('j')
+        | KeyCode::Up
+        | KeyCode::Char('k')
+        | KeyCode::PageDown
+        | KeyCode::PageUp
+        | KeyCode::Home
+        | KeyCode::End => {
             if total > 0 {
-                app.selected_site_idx = (app.selected_site_idx + 1) % total;
-            }
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if total > 0 {
-                app.selected_site_idx = app
-                    .selected_site_idx
-                    .checked_sub(1)
-                    .unwrap_or(total - 1);
+                app.selected_site_idx = move_list_index(app.selected_site_idx, total, key.code);
             }
         }
         KeyCode::Enter => {
@@ -270,40 +284,29 @@ fn handle_workspace_keys(app: &mut App, key: KeyEvent) {
 
 fn handle_tab_groups_keys(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => match app.focus {
+        KeyCode::Down
+        | KeyCode::Char('j')
+        | KeyCode::Up
+        | KeyCode::Char('k')
+        | KeyCode::PageDown
+        | KeyCode::PageUp
+        | KeyCode::Home
+        | KeyCode::End => match app.focus {
             PaneFocus::Left => {
                 if !app.groups.is_empty() {
-                    app.selected_group_idx = (app.selected_group_idx + 1) % app.groups.len();
-                    if let Some(grp_id) = app.selected_group().map(|g| g.id) {
-                        app.trigger_load_group_members(grp_id);
+                    let next = move_list_index(app.selected_group_idx, app.groups.len(), key.code);
+                    if next != app.selected_group_idx {
+                        app.selected_group_idx = next;
+                        if let Some(grp_id) = app.selected_group().map(|g| g.id) {
+                            app.trigger_load_group_members(grp_id);
+                        }
                     }
                 }
             }
             PaneFocus::Right => {
                 if !app.group_members.is_empty() {
                     app.selected_member_idx =
-                        (app.selected_member_idx + 1) % app.group_members.len();
-                }
-            }
-        },
-        KeyCode::Up | KeyCode::Char('k') => match app.focus {
-            PaneFocus::Left => {
-                if !app.groups.is_empty() {
-                    app.selected_group_idx = app
-                        .selected_group_idx
-                        .checked_sub(1)
-                        .unwrap_or(app.groups.len() - 1);
-                    if let Some(grp_id) = app.selected_group().map(|g| g.id) {
-                        app.trigger_load_group_members(grp_id);
-                    }
-                }
-            }
-            PaneFocus::Right => {
-                if !app.group_members.is_empty() {
-                    app.selected_member_idx = app
-                        .selected_member_idx
-                        .checked_sub(1)
-                        .unwrap_or(app.group_members.len() - 1);
+                        move_list_index(app.selected_member_idx, app.group_members.len(), key.code);
                 }
             }
         },
@@ -365,41 +368,30 @@ fn handle_tab_groups_keys(app: &mut App, key: KeyEvent) {
 
 fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => match app.focus {
+        KeyCode::Down
+        | KeyCode::Char('j')
+        | KeyCode::Up
+        | KeyCode::Char('k')
+        | KeyCode::PageDown
+        | KeyCode::PageUp
+        | KeyCode::Home
+        | KeyCode::End => match app.focus {
             PaneFocus::Left => {
                 if !app.libraries.is_empty() {
-                    app.selected_library_idx =
-                        (app.selected_library_idx + 1) % app.libraries.len();
-                    if let Some(lib_title) = app.selected_library().map(|l| l.title.clone()) {
-                        app.trigger_load_library_folders(lib_title);
+                    let next =
+                        move_list_index(app.selected_library_idx, app.libraries.len(), key.code);
+                    if next != app.selected_library_idx {
+                        app.selected_library_idx = next;
+                        if let Some(lib_title) = app.selected_library().map(|l| l.title.clone()) {
+                            app.trigger_load_library_folders(lib_title);
+                        }
                     }
                 }
             }
             PaneFocus::Right => {
                 if !app.folders.is_empty() {
                     app.selected_folder_idx =
-                        (app.selected_folder_idx + 1) % app.folders.len();
-                }
-            }
-        },
-        KeyCode::Up | KeyCode::Char('k') => match app.focus {
-            PaneFocus::Left => {
-                if !app.libraries.is_empty() {
-                    app.selected_library_idx = app
-                        .selected_library_idx
-                        .checked_sub(1)
-                        .unwrap_or(app.libraries.len() - 1);
-                    if let Some(lib_title) = app.selected_library().map(|l| l.title.clone()) {
-                        app.trigger_load_library_folders(lib_title);
-                    }
-                }
-            }
-            PaneFocus::Right => {
-                if !app.folders.is_empty() {
-                    app.selected_folder_idx = app
-                        .selected_folder_idx
-                        .checked_sub(1)
-                        .unwrap_or(app.folders.len() - 1);
+                        move_list_index(app.selected_folder_idx, app.folders.len(), key.code);
                 }
             }
         },
@@ -548,6 +540,22 @@ fn handle_tab_staging_history_keys(app: &mut App, key: KeyEvent) {
                 }
             }
         },
+        KeyCode::PageDown | KeyCode::Char('J') => {
+            if app.focus == PaneFocus::Right && !app.selected_tx_ops.is_empty() {
+                app.selected_tx_op_idx =
+                    (app.selected_tx_op_idx + 1).min(app.selected_tx_ops.len() - 1);
+            } else if app.focus == PaneFocus::Left && !app.staging.is_empty() {
+                app.selected_staging_idx =
+                    (app.selected_staging_idx + 10).min(app.staging.len() - 1);
+            }
+        }
+        KeyCode::PageUp | KeyCode::Char('K') => {
+            if app.focus == PaneFocus::Right && !app.selected_tx_ops.is_empty() {
+                app.selected_tx_op_idx = app.selected_tx_op_idx.saturating_sub(1);
+            } else if app.focus == PaneFocus::Left && !app.staging.is_empty() {
+                app.selected_staging_idx = app.selected_staging_idx.saturating_sub(10);
+            }
+        }
         KeyCode::Char('d') | KeyCode::Delete => {
             if app.focus == PaneFocus::Left && !app.staging.is_empty() {
                 app.staging.remove_at(app.selected_staging_idx);
