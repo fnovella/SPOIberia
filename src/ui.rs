@@ -1285,7 +1285,7 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 .border_type(BorderType::Rounded);
             f.render_widget(
                 Paragraph::new(
-                    " [Ctrl+S / Tab] Buscar ahora | [↑/↓] Mover | [Espacio] Marcar varios | [Enter] Encolar en Staging | [Esc] Cancelar",
+                    " [↑/↓] Mover | [Tab] Marcar varios | [Ctrl+S] Buscar ahora | [Enter] Encolar en Staging | [Esc] Cancelar",
                 )
                 .block(help_block),
                 chunks[2],

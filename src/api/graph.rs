@@ -256,53 +256,139 @@ impl GraphClient {
         Ok(sites)
     }
 
-    /// Search users in the tenant directory via Microsoft Graph.
+    /// Check whether every whitespace-separated token in `query` appears in the user's
+    /// display name, email, or UPN (case-insensitive).
+    pub fn matches_all_query_tokens(user: &DirectoryUser, query: &str) -> bool {
+        let tokens: Vec<String> = query
+            .trim()
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return false;
+        }
+        let disp = user.display_name.to_lowercase();
+        let mail = user.email.to_lowercase();
+        let upn = user.upn.to_lowercase();
+        tokens
+            .iter()
+            .all(|t| disp.contains(t) || mail.contains(t) || upn.contains(t))
+    }
+
+    async fn query_users_search(
+        &self,
+        token: &str,
+        search_clause: &str,
+    ) -> Result<Option<Vec<DirectoryUser>>> {
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/users?$search={}&$select=displayName,mail,userPrincipalName,jobTitle,department&$top=50",
+            urlencoding::encode(search_clause)
+        );
+
+        let resp = send_with_retry(|| {
+            self.http
+                .get(&url)
+                .bearer_auth(token)
+                .header("ConsistencyLevel", "eventual")
+        })
+        .await?;
+
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+
+        let list: GraphListResponse<GraphUserItem> = resp.json().await?;
+        Ok(Some(Self::map_users(list.value)))
+    }
+
+    /// Search users in the tenant directory via Microsoft Graph (supporting multi-word queries and emails).
     pub async fn search_directory_users(&self, query: &str) -> Result<Vec<DirectoryUser>> {
         let q = query.trim();
         if q.is_empty() {
             return Ok(Vec::new());
         }
         let token = self.graph_token().await?;
-        let clean_q = q.replace('"', "");
-        let search_clause = format!(
-            "\"displayName:{}\" OR \"mail:{}\" OR \"userPrincipalName:{}\"",
-            clean_q, clean_q, clean_q
-        );
-        let encoded_search = urlencoding::encode(&search_clause);
-        let url = format!(
-            "https://graph.microsoft.com/v1.0/users?$search={}&$select=displayName,mail,userPrincipalName,jobTitle,department&$top=20",
-            encoded_search
-        );
-
-        let resp = send_with_retry(|| {
-            self.http
-                .get(&url)
-                .bearer_auth(&token)
-                .header("ConsistencyLevel", "eventual")
-        })
-        .await?;
-
-        if !resp.status().is_success() {
-            // Fallback to $filter=startsWith
-            let esc = clean_q.replace('\'', "''");
-            let fallback_filter = format!(
-                "startsWith(displayName,'{}') or startsWith(mail,'{}') or startsWith(userPrincipalName,'{}')",
-                esc, esc, esc
-            );
-            let fb_url = format!(
-                "https://graph.microsoft.com/v1.0/users?$filter={}&$select=displayName,mail,userPrincipalName,jobTitle,department&$top=20",
-                urlencoding::encode(&fallback_filter)
-            );
-            let fb_resp = send_with_retry(|| self.http.get(&fb_url).bearer_auth(&token)).await?;
-            if !fb_resp.status().is_success() {
-                return Ok(Vec::new());
-            }
-            let list: GraphListResponse<GraphUserItem> = fb_resp.json().await?;
-            return Ok(Self::map_users(list.value));
+        let clean_q = q.replace(['"', '\''], "");
+        let raw_tokens: Vec<&str> = clean_q.split_whitespace().collect();
+        if raw_tokens.is_empty() {
+            return Ok(Vec::new());
         }
 
-        let list: GraphListResponse<GraphUserItem> = resp.json().await?;
-        Ok(Self::map_users(list.value))
+        let mut search_tokens: Vec<&str> = raw_tokens
+            .iter()
+            .copied()
+            .filter(|t| t.chars().count() >= 2)
+            .collect();
+        if search_tokens.is_empty() {
+            search_tokens = raw_tokens.clone();
+        }
+
+        let single_clause = |t: &str| -> String {
+            format!(
+                "\"displayName:{}\" OR \"mail:{}\" OR \"userPrincipalName:{}\"",
+                t, t, t
+            )
+        };
+
+        let search_clause = if search_tokens.len() == 1 {
+            single_clause(search_tokens[0])
+        } else {
+            search_tokens
+                .iter()
+                .map(|t| format!("({})", single_clause(t)))
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        };
+
+        if let Some(users) = self.query_users_search(&token, &search_clause).await? {
+            let filtered: Vec<DirectoryUser> = users
+                .into_iter()
+                .filter(|u| Self::matches_all_query_tokens(u, q))
+                .collect();
+            if !filtered.is_empty() || raw_tokens.len() == 1 {
+                return Ok(filtered);
+            }
+        }
+
+        if raw_tokens.len() > 1 {
+            if let Some(longest) = search_tokens
+                .iter()
+                .copied()
+                .max_by_key(|t| t.chars().count())
+            {
+                let fallback_clause = single_clause(longest);
+                if let Some(users) = self.query_users_search(&token, &fallback_clause).await? {
+                    let filtered: Vec<DirectoryUser> = users
+                        .into_iter()
+                        .filter(|u| Self::matches_all_query_tokens(u, q))
+                        .collect();
+                    if !filtered.is_empty() {
+                        return Ok(filtered);
+                    }
+                }
+            }
+        }
+
+        // Fallback to $filter=startsWith on first token
+        let esc = raw_tokens[0].replace('\'', "''");
+        let fallback_filter = format!(
+            "startsWith(displayName,'{}') or startsWith(mail,'{}') or startsWith(userPrincipalName,'{}')",
+            esc, esc, esc
+        );
+        let fb_url = format!(
+            "https://graph.microsoft.com/v1.0/users?$filter={}&$select=displayName,mail,userPrincipalName,jobTitle,department&$top=50",
+            urlencoding::encode(&fallback_filter)
+        );
+        let fb_resp = send_with_retry(|| self.http.get(&fb_url).bearer_auth(&token)).await?;
+        if !fb_resp.status().is_success() {
+            return Ok(Vec::new());
+        }
+        let list: GraphListResponse<GraphUserItem> = fb_resp.json().await?;
+        Ok(Self::map_users(list.value)
+            .into_iter()
+            .filter(|u| Self::matches_all_query_tokens(u, q))
+            .collect())
     }
 
     fn map_users(items: Vec<GraphUserItem>) -> Vec<DirectoryUser> {
@@ -329,5 +415,31 @@ impl GraphClient {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_matches_all_query_tokens_multi_word_and_email() {
+        let user = DirectoryUser {
+            display_name: "Novella Benavent, Francisco Javier".to_string(),
+            email: "franciscojavier.novella.benavent@contoso.com".to_string(),
+            upn: "franciscojavier.novella.benavent@contoso.com".to_string(),
+            login_name: "franciscojavier.novella.benavent@contoso.com".to_string(),
+            job_title: None,
+            department: None,
+        };
+
+        assert!(GraphClient::matches_all_query_tokens(&user, "novella benavent"));
+        assert!(GraphClient::matches_all_query_tokens(&user, "francisco novella"));
+        assert!(GraphClient::matches_all_query_tokens(&user, "novella ben"));
+        assert!(GraphClient::matches_all_query_tokens(
+            &user,
+            "novella.benavent@contoso.com"
+        ));
+        assert!(!GraphClient::matches_all_query_tokens(&user, "novella garcia"));
     }
 }

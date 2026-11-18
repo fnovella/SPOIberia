@@ -732,15 +732,20 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
             group_id,
             group_title,
             mut query,
-            results,
+            mut results,
             mut selected_idx,
             mut marked_identifiers,
             mut searching,
         } => match key.code {
             KeyCode::Esc => app.modal = Modal::None,
-            KeyCode::Down => {
+            KeyCode::Down
+            | KeyCode::Up
+            | KeyCode::PageDown
+            | KeyCode::PageUp
+            | KeyCode::Home
+            | KeyCode::End => {
                 if !results.is_empty() {
-                    selected_idx = (selected_idx + 1) % results.len();
+                    selected_idx = move_list_index(selected_idx, results.len(), key.code);
                 }
                 app.modal = Modal::AddUserToGroup {
                     group_id,
@@ -752,25 +757,13 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                     searching,
                 };
             }
-            KeyCode::Up => {
+            KeyCode::Tab | KeyCode::Insert => {
                 if !results.is_empty() {
-                    selected_idx = selected_idx.checked_sub(1).unwrap_or(results.len() - 1);
-                }
-                app.modal = Modal::AddUserToGroup {
-                    group_id,
-                    group_title,
-                    query,
-                    results,
-                    selected_idx,
-                    marked_identifiers,
-                    searching,
-                };
-            }
-            KeyCode::Char(' ') if !results.is_empty() => {
-                if let Some(u) = results.get(selected_idx) {
-                    let ident = u.identifier().to_string();
-                    if !marked_identifiers.remove(&ident) {
-                        marked_identifiers.insert(ident);
+                    if let Some(u) = results.get(selected_idx) {
+                        let ident = u.identifier().to_string();
+                        if !marked_identifiers.remove(&ident) {
+                            marked_identifiers.insert(ident);
+                        }
                     }
                 }
                 app.modal = Modal::AddUserToGroup {
@@ -783,27 +776,15 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                     searching,
                 };
             }
-            KeyCode::Tab => {
-                if !query.trim().is_empty() {
-                    searching = true;
-                    let q_clone = query.clone();
-                    app.modal = Modal::AddUserToGroup {
-                        group_id,
-                        group_title,
-                        query,
-                        results,
-                        selected_idx,
-                        marked_identifiers,
-                        searching,
-                    };
-                    app.trigger_search_directory_users(q_clone);
-                }
-            }
             KeyCode::Backspace => {
                 query.pop();
                 let should_search = query.trim().len() >= 2;
                 let q_clone = query.clone();
                 searching = should_search;
+                if !should_search {
+                    results.clear();
+                    selected_idx = 0;
+                }
                 app.modal = Modal::AddUserToGroup {
                     group_id,
                     group_title,
@@ -836,7 +817,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                     return;
                 }
                 query.push(c);
-                let should_search = query.trim().len() >= 2;
+                let should_search = !c.is_whitespace() && query.trim().len() >= 2;
                 let q_clone = query.clone();
                 searching = should_search;
                 app.modal = Modal::AddUserToGroup {

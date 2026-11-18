@@ -113,7 +113,10 @@ pub enum AsyncEvent {
         library_title: String,
         folders: Vec<SpoFolder>,
     },
-    DirectoryUsersFound(Vec<DirectoryUser>),
+    DirectoryUsersFound {
+        query: String,
+        results: Vec<DirectoryUser>,
+    },
     MatrixImported {
         queue_ops: Vec<StagingOp>,
         source_file: String,
@@ -566,7 +569,7 @@ impl App {
                     results = spo.search_people_picker(url, &query).await.unwrap_or_default();
                 }
             }
-            let _ = tx.send(AsyncEvent::DirectoryUsersFound(results));
+            let _ = tx.send(AsyncEvent::DirectoryUsersFound { query, results });
         });
     }
 
@@ -865,17 +868,20 @@ impl App {
                     self.selected_folder_idx = 0;
                 }
             }
-            AsyncEvent::DirectoryUsersFound(results) => {
+            AsyncEvent::DirectoryUsersFound { query, results } => {
                 if let Modal::AddUserToGroup {
+                    query: ref modal_query,
                     results: ref mut modal_res,
                     selected_idx: ref mut sel,
                     searching: ref mut srch,
                     ..
                 } = self.modal
                 {
-                    *modal_res = results;
-                    *sel = 0;
-                    *srch = false;
+                    if modal_query.trim().eq_ignore_ascii_case(query.trim()) {
+                        *modal_res = results;
+                        *sel = 0;
+                        *srch = false;
+                    }
                 }
             }
             AsyncEvent::MatrixImported {
