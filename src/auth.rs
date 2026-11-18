@@ -15,7 +15,6 @@ use url::Url;
 pub const LEGACY_AZURE_CLI_CLIENT_ID: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
 /// Default Public Client ID (admin-consented in the tenant for Microsoft Graph + SharePoint Online `AllSites.FullControl`).
 pub const DEFAULT_CLIENT_ID: &str = "6cdea627-9710-4946-9544-afa7d24fd12f";
-pub const DEFAULT_TENANT: &str = "f5fd9e16-114f-4820-8de1-6312daf9aebb";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedAccessToken {
@@ -105,46 +104,185 @@ impl AuthManager {
         Ok(base.join("spoiberia"))
     }
 
-    /// Detect default tenant and client_id from env vars or existing `~/.cli-m365-connection.json` if present.
-    pub fn default_tenant_and_client() -> (String, String) {
-        let mut tenant = std::env
-            ::var("SPOIBERIA_TENANT_ID")
-            .unwrap_or_else(|_| DEFAULT_TENANT.to_string());
-        let mut client_id = std::env
-            ::var("SPOIBERIA_CLIENT_ID")
-            .unwrap_or_else(|_| DEFAULT_CLIENT_ID.to_string());
+    /// Parse an email address (`user@domain.com`), domain (`domain.com`), or tenant GUID into `(domain_or_tenant, optional_login_hint)`.
+    pub fn parse_tenant_or_email(input: &str) -> Option<(String, Option<String>)> {
+        let trimmed = input.trim();
+        if trimmed.is_empty()
+            || trimmed.contains(char::is_whitespace)
+            || trimmed.eq_ignore_ascii_case("common")
+            || trimmed.eq_ignore_ascii_case("organizations")
+            || trimmed.eq_ignore_ascii_case("consumers")
+        {
+            return None;
+        }
+        if let Some((local, domain)) = trimmed.split_once('@') {
+            let domain = domain.trim();
+            if local.is_empty() || domain.is_empty() || domain.contains('@') {
+                return None;
+            }
+            return Some((domain.to_ascii_lowercase(), Some(trimmed.to_string())));
+        }
+        Some((trimmed.to_string(), None))
+    }
+
+    /// Extract the Entra ID tenant GUID from an OpenID Connect discovery JSON document.
+    pub fn extract_tenant_guid_from_oidc(oidc_json: &serde_json::Value) -> Option<String> {
+        for field in ["token_endpoint", "issuer"] {
+            let Some(url_str) = oidc_json.get(field).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Ok(parsed) = Url::parse(url_str) else {
+                continue;
+            };
+            if let Some(seg) = parsed
+                .path_segments()
+                .and_then(|mut segs| segs.find(|s| !s.is_empty()))
+            {
+                let lower = seg.to_ascii_lowercase();
+                if !matches!(
+                    lower.as_str(),
+                    "common"
+                        | "organizations"
+                        | "consumers"
+                        | "oauth2"
+                        | "v2.0"
+                        | "{tenantid}"
+                        | "%7btenantid%7d"
+                ) {
+                    return Some(seg.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Detect default client_id from env vars or existing `~/.cli-m365-connection.json` if present.
+    pub fn default_client_id() -> String {
+        if let Ok(c) = std::env::var("SPOIBERIA_CLIENT_ID") {
+            let trimmed = c.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        if let Some(home) = dirs::home_dir() {
+            let m365_conn = home.join(".cli-m365-connection.json");
+            if let Ok(raw) = fs::read_to_string(m365_conn) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if let Some(c) = val
+                        .get("appId")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| {
+                            !s.is_empty()
+                                && !s.eq_ignore_ascii_case(LEGACY_AZURE_CLI_CLIENT_ID)
+                        })
+                    {
+                        return c.to_string();
+                    }
+                }
+            }
+        }
+        DEFAULT_CLIENT_ID.to_string()
+    }
+
+    /// Detect a default corporate email, domain, or tenant ID from env vars, cached session, or CLI for M365 config.
+    pub fn detect_default_login_hint(&self) -> Option<String> {
+        for var in ["SPOIBERIA_USER_EMAIL", "SPOIBERIA_TENANT_ID"] {
+            if let Ok(val) = std::env::var(var) {
+                if Self::parse_tenant_or_email(&val).is_some() {
+                    return Some(val.trim().to_string());
+                }
+            }
+        }
+
+        if let Ok(Some(sess)) = self.load_session() {
+            if let Some(ref upn) = sess.user_upn {
+                if Self::parse_tenant_or_email(upn).is_some() {
+                    return Some(upn.trim().to_string());
+                }
+            }
+            if Self::parse_tenant_or_email(&sess.tenant_id).is_some() {
+                return Some(sess.tenant_id);
+            }
+        }
 
         if let Some(home) = dirs::home_dir() {
             let m365_conn = home.join(".cli-m365-connection.json");
             if let Ok(raw) = fs::read_to_string(m365_conn) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
-                    if tenant == DEFAULT_TENANT {
-                        if
-                            let Some(t) = val
-                                .get("identityTenantId")
-                                .and_then(|v| v.as_str())
-                                .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("common"))
-                        {
-                            tenant = t.to_string();
-                        }
+                    if let Some(name) = val
+                        .get("identityName")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| s.contains('@') && Self::parse_tenant_or_email(s).is_some())
+                    {
+                        return Some(name.trim().to_string());
                     }
-                    if client_id == DEFAULT_CLIENT_ID {
-                        if
-                            let Some(c) = val
-                                .get("appId")
-                                .and_then(|v| v.as_str())
-                                .filter(|s| {
-                                    !s.is_empty()
-                                        && !s.eq_ignore_ascii_case(LEGACY_AZURE_CLI_CLIENT_ID)
-                                })
-                        {
-                            client_id = c.to_string();
-                        }
+                    if let Some(t) = val
+                        .get("identityTenantId")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| Self::parse_tenant_or_email(s).is_some())
+                    {
+                        return Some(t.trim().to_string());
                     }
                 }
             }
         }
-        (tenant, client_id)
+
+        None
+    }
+
+    /// Resolve the Entra ID tenant GUID and optional `login_hint` from an email address, domain, or tenant ID.
+    pub async fn resolve_tenant_id(
+        &self,
+        tenant_or_email: Option<&str>,
+    ) -> Result<(String, Option<String>)> {
+        let parsed = tenant_or_email
+            .and_then(Self::parse_tenant_or_email)
+            .or_else(|| {
+                self.detect_default_login_hint()
+                    .as_deref()
+                    .and_then(Self::parse_tenant_or_email)
+            });
+
+        let (domain_or_tenant, login_hint) = parsed.ok_or_else(|| {
+            anyhow!(
+                "No se conoce el correo corporativo o tenant de Microsoft 365. \
+                Introduce tu correo corporativo (ej. usuario@dominio.com) o usa `--email` / `--tenant`."
+            )
+        })?;
+
+        let oidc_url = format!(
+            "https://login.microsoftonline.com/{}/.well-known/openid-configuration",
+            domain_or_tenant
+        );
+        let resp = self
+            .http
+            .get(&oidc_url)
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "Error consultando la configuración OpenID de Entra ID para '{}'",
+                    domain_or_tenant
+                )
+            })?;
+
+        if resp.status().is_success() {
+            let json_val: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+            let tenant_id = Self::extract_tenant_guid_from_oidc(&json_val)
+                .unwrap_or_else(|| domain_or_tenant.clone());
+            return Ok((tenant_id, login_hint));
+        }
+
+        if resp.status().is_client_error() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "No se encontró un tenant de Microsoft 365 válido para '{}': {}",
+                domain_or_tenant,
+                body
+            ));
+        }
+
+        Ok((domain_or_tenant, login_hint))
     }
 
     pub fn load_session(&self) -> Result<Option<AuthSession>> {
@@ -202,11 +340,11 @@ impl AuthManager {
     /// Interactive Browser OAuth2 login with PKCE over localhost loopback.
     pub async fn login_interactive_browser(
         &self,
-        tenant: Option<&str>,
+        tenant_or_email: Option<&str>,
         client_id: Option<&str>
     ) -> Result<AuthSession> {
-        let (def_tenant, def_client) = Self::default_tenant_and_client();
-        let tenant = tenant.unwrap_or(&def_tenant);
+        let (tenant_id, login_hint) = self.resolve_tenant_id(tenant_or_email).await?;
+        let def_client = Self::default_client_id();
         let client_id = client_id.unwrap_or(&def_client);
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -222,19 +360,24 @@ impl AuthManager {
             .collect();
 
         let mut auth_url = Url::parse(
-            &format!("https://login.microsoftonline.com/{}/oauth2/v2.0/authorize", tenant)
+            &format!("https://login.microsoftonline.com/{}/oauth2/v2.0/authorize", tenant_id)
         )?;
-        auth_url
-            .query_pairs_mut()
-            .append_pair("client_id", client_id)
-            .append_pair("response_type", "code")
-            .append_pair("redirect_uri", &redirect_uri)
-            .append_pair("response_mode", "query")
-            .append_pair("scope", "https://graph.microsoft.com/.default offline_access openid profile")
-            .append_pair("code_challenge", &challenge)
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("state", &state)
-            .append_pair("prompt", "select_account");
+        {
+            let mut pairs = auth_url.query_pairs_mut();
+            pairs
+                .append_pair("client_id", client_id)
+                .append_pair("response_type", "code")
+                .append_pair("redirect_uri", &redirect_uri)
+                .append_pair("response_mode", "query")
+                .append_pair("scope", "https://graph.microsoft.com/.default offline_access openid profile")
+                .append_pair("code_challenge", &challenge)
+                .append_pair("code_challenge_method", "S256")
+                .append_pair("state", &state)
+                .append_pair("prompt", "select_account");
+            if let Some(ref hint) = login_hint {
+                pairs.append_pair("login_hint", hint);
+            }
+        }
 
         let _ = open::that(auth_url.as_str());
 
@@ -302,7 +445,7 @@ impl AuthManager {
             anyhow!("No se recibió código de autorización OAuth2")
         )?;
 
-        let token_url = format!("https://login.microsoftonline.com/{}/oauth2/v2.0/token", tenant);
+        let token_url = format!("https://login.microsoftonline.com/{}/oauth2/v2.0/token", tenant_id);
         let params = [
             ("client_id", client_id),
             ("grant_type", "authorization_code"),
@@ -330,9 +473,9 @@ impl AuthManager {
         });
 
         let session = AuthSession {
-            tenant_id: tenant.to_string(),
+            tenant_id,
             client_id: client_id.to_string(),
-            user_upn: None,
+            user_upn: login_hint,
             user_display_name: None,
             root_site_url: None,
             refresh_token,
@@ -345,14 +488,14 @@ impl AuthManager {
     /// Request a Device Code from Microsoft Entra ID.
     pub async fn start_device_code(
         &self,
-        tenant: Option<&str>,
+        tenant_or_email: Option<&str>,
         client_id: Option<&str>
     ) -> Result<(DeviceCodePrompt, String, String)> {
-        let (def_tenant, def_client) = Self::default_tenant_and_client();
-        let tenant = tenant.unwrap_or(&def_tenant).to_string();
+        let (tenant_id, _login_hint) = self.resolve_tenant_id(tenant_or_email).await?;
+        let def_client = Self::default_client_id();
         let client_id = client_id.unwrap_or(&def_client).to_string();
 
-        let url = format!("https://login.microsoftonline.com/{}/oauth2/v2.0/devicecode", tenant);
+        let url = format!("https://login.microsoftonline.com/{}/oauth2/v2.0/devicecode", tenant_id);
         let params = [
             ("client_id", client_id.as_str()),
             ("scope", "https://graph.microsoft.com/.default offline_access openid profile"),
@@ -364,7 +507,7 @@ impl AuthManager {
             return Err(anyhow!("Error solicitando Device Code: {}", err_txt));
         }
         let prompt: DeviceCodePrompt = resp.json().await?;
-        Ok((prompt, tenant, client_id))
+        Ok((prompt, tenant_id, client_id))
     }
 
     /// Poll the token endpoint until the user completes Device Code authentication.
@@ -593,5 +736,54 @@ mod tests {
         }));
         assert!(!AuthManager::is_blocked_spo_token(&other_scope));
         assert!(!AuthManager::is_blocked_spo_token("not-a-jwt"));
+    }
+
+    #[test]
+    fn test_parse_tenant_or_email() {
+        assert_eq!(
+            AuthManager::parse_tenant_or_email("  Usuario@Contoso.COM "),
+            Some(("contoso.com".to_string(), Some("Usuario@Contoso.COM".to_string())))
+        );
+        assert_eq!(
+            AuthManager::parse_tenant_or_email("contoso.onmicrosoft.com"),
+            Some(("contoso.onmicrosoft.com".to_string(), None))
+        );
+        assert_eq!(
+            AuthManager::parse_tenant_or_email("11111111-2222-3333-4444-555555555555"),
+            Some(("11111111-2222-3333-4444-555555555555".to_string(), None))
+        );
+        assert_eq!(AuthManager::parse_tenant_or_email(""), None);
+        assert_eq!(AuthManager::parse_tenant_or_email("   "), None);
+        assert_eq!(AuthManager::parse_tenant_or_email("common"), None);
+        assert_eq!(AuthManager::parse_tenant_or_email("organizations"), None);
+        assert_eq!(AuthManager::parse_tenant_or_email("@contoso.com"), None);
+        assert_eq!(AuthManager::parse_tenant_or_email("user@"), None);
+        assert_eq!(AuthManager::parse_tenant_or_email("user name@contoso.com"), None);
+    }
+
+    #[test]
+    fn test_extract_tenant_guid_from_oidc() {
+        let from_token_endpoint = serde_json::json!({
+            "token_endpoint": "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/oauth2/v2.0/token",
+            "issuer": "https://sts.windows.net/11111111-2222-3333-4444-555555555555/"
+        });
+        assert_eq!(
+            AuthManager::extract_tenant_guid_from_oidc(&from_token_endpoint),
+            Some("11111111-2222-3333-4444-555555555555".to_string())
+        );
+
+        let only_issuer = serde_json::json!({
+            "issuer": "https://sts.windows.net/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/"
+        });
+        assert_eq!(
+            AuthManager::extract_tenant_guid_from_oidc(&only_issuer),
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string())
+        );
+
+        let common_placeholder = serde_json::json!({
+            "token_endpoint": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            "issuer": "https://sts.windows.net/{tenantid}/"
+        });
+        assert_eq!(AuthManager::extract_tenant_guid_from_oidc(&common_placeholder), None);
     }
 }

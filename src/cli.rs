@@ -163,6 +163,8 @@ pub enum AuthCommand {
     Login {
         #[arg(long = "device-code")]
         device_code: bool,
+        #[arg(short = 'u', long = "email", visible_alias = "user")]
+        email: Option<String>,
         #[arg(long = "tenant")]
         tenant: Option<String>,
         #[arg(long = "client-id")]
@@ -433,18 +435,34 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
             }
             AuthCommand::Login {
                 device_code,
+                email,
                 tenant,
                 client_id,
             } => {
+                let mut target = email.clone().or_else(|| tenant.clone());
+                if target.is_none()
+                    && auth.detect_default_login_hint().is_none()
+                    && !cli.non_interactive
+                {
+                    use std::io::Write;
+                    eprint!("Correo corporativo M365 (ej. usuario@dominio.com): ");
+                    let _ = std::io::stderr().flush();
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    let trimmed = line.trim().to_string();
+                    if !trimmed.is_empty() {
+                        target = Some(trimmed);
+                    }
+                }
                 let sess = if *device_code {
                     let (prompt, t, c) = auth
-                        .start_device_code(tenant.as_deref(), client_id.as_deref())
+                        .start_device_code(target.as_deref(), client_id.as_deref())
                         .await?;
                     eprintln!("{}", prompt.message);
                     auth.poll_device_code(&prompt, &t, &c).await?
                 } else {
                     eprintln!("Abriendo el navegador para iniciar sesión en Microsoft 365...");
-                    auth.login_interactive_browser(tenant.as_deref(), client_id.as_deref())
+                    auth.login_interactive_browser(target.as_deref(), client_id.as_deref())
                         .await?
                 };
                 let (me, root) = graph.get_me_and_root_site().await?;

@@ -233,6 +233,20 @@ fn draw_auth_screen(f: &mut Frame<'_>, app: &App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan));
 
+    let email_display = if app.login_email_input.is_empty() {
+        Span::styled(
+            "usuario@dominio.com█",
+            Style::default().fg(Color::DarkGray),
+        )
+    } else {
+        Span::styled(
+            format!("{}█", app.login_email_input),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -240,18 +254,25 @@ fn draw_auth_screen(f: &mut Frame<'_>, app: &App, area: Rect) {
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
+        Line::from("Introduce tu correo corporativo M365 (para detectar automáticamente el tenant):"),
+        Line::from(vec![
+            Span::styled("  Correo / Dominio / Tenant: [ ", Style::default().fg(Color::Cyan)),
+            email_display,
+            Span::styled(" ]", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(""),
         Line::from("Selecciona un método de inicio de sesión nativo contra Microsoft Entra ID:"),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  [Enter] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled("  [    Enter    ] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             Span::raw("Iniciar sesión interactivo en el navegador (OAuth2 + PKCE)"),
         ]),
         Line::from(vec![
-            Span::styled("  [  d  ] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled("  [ F2 / Ctrl+D ] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::raw("Iniciar sesión mediante Código de Dispositivo (Device Code Flow)"),
         ]),
         Line::from(vec![
-            Span::styled("  [  q  ] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled("  [     Esc     ] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
             Span::raw("Salir"),
         ]),
     ];
@@ -1096,7 +1117,7 @@ fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn context_help_keys(app: &App) -> &'static str {
     match app.screen {
-        Screen::Auth => "Enter: Login Navegador | d: Login Device Code | q: Salir",
+        Screen::Auth => "Escribe tu correo M365 | Enter: Login Navegador | F2 / Ctrl+D: Device Code | Esc: Salir",
         Screen::SiteSelector => {
             "↑/↓: Mover | Enter: Abrir Sitio | /: Filtrar | s: Buscar en Tenant | u: URL Manual | c: Fijar Origen Clon | r: Recargar | ?: Ayuda | q: Salir"
         }

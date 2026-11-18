@@ -170,6 +170,7 @@ pub struct App {
     pub user_display_name: String,
     pub root_site_url: String,
     pub device_code_prompt: Option<DeviceCodePrompt>,
+    pub login_email_input: String,
 
     // Site selector state
     pub sites: Vec<SpoSite>,
@@ -235,6 +236,7 @@ impl App {
         let (tx_sender, rx_receiver) = mpsc::unbounded_channel();
         let cached_sites = db.load_cached_sites().unwrap_or_default();
         let sess = auth.load_session().ok().flatten();
+        let login_email_input = auth.detect_default_login_hint().unwrap_or_default();
 
         let (initial_screen, upn, disp, root) = if let Some(s) = sess {
             (
@@ -265,6 +267,7 @@ impl App {
             user_display_name: disp,
             root_site_url: root,
             device_code_prompt: None,
+            login_email_input,
             sites: cached_sites,
             site_filter: String::new(),
             selected_site_idx: 0,
@@ -332,14 +335,33 @@ impl App {
         self.folders.get(self.selected_folder_idx)
     }
 
+    fn resolve_login_target_or_toast(&mut self) -> Option<String> {
+        let input = self.login_email_input.trim().to_string();
+        let target = if input.is_empty() {
+            self.auth.detect_default_login_hint()
+        } else {
+            Some(input)
+        };
+        if target.is_none() {
+            self.status_toast = Some((
+                "Introduce tu correo corporativo M365 (ej. usuario@dominio.com) antes de iniciar sesión".to_string(),
+                true,
+            ));
+        }
+        target
+    }
+
     pub fn trigger_browser_login(&mut self) {
-        self.busy_message = Some("Esperando inicio de sesión en el navegador (PKCE)...".to_string());
+        let Some(target) = self.resolve_login_target_or_toast() else {
+            return;
+        };
+        self.busy_message = Some("Resolviendo tenant e iniciando sesión en el navegador (PKCE)...".to_string());
         let auth = self.auth.clone();
         let graph = self.graph.clone();
         let tx = self.tx_sender.clone();
 
         tokio::spawn(async move {
-            match auth.login_interactive_browser(None, None).await {
+            match auth.login_interactive_browser(Some(&target), None).await {
                 Ok(_) => match graph.get_me_and_root_site().await {
                     Ok((me, root)) => {
                         let _ = tx.send(AsyncEvent::AuthCompleted {
@@ -360,13 +382,16 @@ impl App {
     }
 
     pub fn trigger_device_code_login(&mut self) {
-        self.busy_message = Some("Solicitando código de dispositivo a Entra ID...".to_string());
+        let Some(target) = self.resolve_login_target_or_toast() else {
+            return;
+        };
+        self.busy_message = Some("Resolviendo tenant y solicitando código de dispositivo a Entra ID...".to_string());
         let auth = self.auth.clone();
         let graph = self.graph.clone();
         let tx = self.tx_sender.clone();
 
         tokio::spawn(async move {
-            match auth.start_device_code(None, None).await {
+            match auth.start_device_code(Some(&target), None).await {
                 Ok((prompt, tenant, client_id)) => {
                     let _ = tx.send(AsyncEvent::DeviceCodeReady(prompt.clone()));
                     match auth.poll_device_code(&prompt, &tenant, &client_id).await {

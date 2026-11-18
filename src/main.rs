@@ -132,9 +132,24 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
 
     match app.screen {
         Screen::Auth => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Esc => app.should_quit = true,
             KeyCode::Enter => app.trigger_browser_login(),
-            KeyCode::Char('d') | KeyCode::Char('D') => app.trigger_device_code_login(),
+            KeyCode::F(2) => app.trigger_device_code_login(),
+            KeyCode::Char('d') | KeyCode::Char('D')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.trigger_device_code_login();
+            }
+            KeyCode::Backspace => {
+                app.login_email_input.pop();
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                app.login_email_input.push(c);
+            }
             _ => {}
         },
         Screen::SiteSelector => handle_site_selector_keys(app, key),
