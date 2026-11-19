@@ -28,6 +28,10 @@ Aplicación multiplataforma escrita en **Rust** con **arquitectura dual** (**Int
   2. Creación de bibliotecas de documentos faltantes y **copia Server-Side (`SP.MoveCopyUtil`)** de todas las carpetas y archivos conservando su historial de versiones sin descargar datos por la máquina local.
   3. Replicación *top-down* de los **permisos únicos (herencia rota)** a nivel de carpeta hacia los grupos y usuarios equivalentes del destino.
 
+### Fase 4 — Control de Sincronización Offline (OneDrive Sync / Accesos Directos)
+- Activación y desactivación mediante SharePoint Online REST API de `ExcludeFromOfflineClient` tanto a nivel de **Sitio (`SP.Web`)** como de **Bibliotecas de Documentos (`SP.List`)**, con soporte recursivo de subsitios (`--include-subsites`).
+- Oculta los botones **Sincronizar** y **Agregar acceso directo a OneDrive** e impide nuevas sincronizaciones o accesos directos hacia los OneDrive privativos de los usuarios, manteniendo auditoría transaccional y **Rollback en SQLite** del estado previo exacto.
+
 ---
 
 ## Uso Interactivo (TUI)
@@ -39,10 +43,10 @@ spoiberia
 ```
 
 ### Atajos de Teclado Principales en la TUI
-- **Global**: `q` (Salir), `?` (Ayuda), `A` (**Aplicar cambios en Staging**), `1`/`2`/`3`/`4` (Cambiar entre pestañas del sitio).
+- **Global**: `q` (Salir), `?` (Ayuda), `A` (**Aplicar cambios en Staging**), `1`/`2`/`3`/`4` (Cambiar entre pestañas del sitio), `O` (Activar/Desactivar sync offline en el sitio y todas sus bibliotecas).
 - **Selector de Sitios**: `↑`/`↓` (Navegar), `Enter` (Abrir sitio), `/` (Filtrar local), `s` (Buscar en el tenant), `u` (Abrir URL manual), `c` (Fijar como sitio Origen para Clonado).
 - **Pestaña 1 (Grupos y Usuarios)**: `Tab`/`←`/`→` (Cambiar panel), `a` (Buscar usuario en directorio M365 y asignar), `d` (Remover usuario), `g` (Crear grupo).
-- **Pestaña 2 (Bibliotecas y Carpetas)**: `n` (Nueva carpeta), `b` (Nueva biblioteca), `p` (Asignar permiso único a carpeta), `i` (Importar matriz CSV/JSON), `e` (Exportar matriz CSV/JSON).
+- **Pestaña 2 (Bibliotecas y Carpetas)**: `o` (Activar/Desactivar sync offline en biblioteca seleccionada), `O` (En sitio y todas sus bibliotecas), `n` (Nueva carpeta), `b` (Nueva biblioteca), `p` (Asignar permiso único a carpeta), `i` (Importar matriz CSV/JSON), `e` (Exportar matriz CSV/JSON).
 - **Pestaña 3 (Clonar Sitio)**: `Espacio` (Marcar/desmarcar opciones), `s` (URL Sitio Origen), `Enter` (Generar plan de clonado en Staging).
 - **Pestaña 4 (Staging e Historial SQLite)**: `A` (Aplicar cola Staging), `R` (**Revertir transacción completa**), `r` (**Revertir operación individual**), `d` (Descartar ítem de Staging), `X` (Vaciar Staging).
 
@@ -103,6 +107,22 @@ spoiberia matrix export \
 spoiberia clone \
   --source-site "https://contoso.sharepoint.com/sites/PlantillaObra" \
   --target-site "https://contoso.sharepoint.com/sites/NuevaObra" \
+  --dry-run --json
+
+# 8. Fase 4: Control de Sincronización Offline (OneDrive Sync / Accesos Directos)
+spoiberia sync status \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
+  --include-subsites --json
+
+spoiberia sync disable \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
+  --include-subsites \
+  --note "Bloquear sincronización en OneDrive" \
+  --dry-run --json
+
+spoiberia sync enable \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
+  --library "Documentos" \
   --dry-run --json
 ```
 

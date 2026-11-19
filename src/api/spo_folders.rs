@@ -7,6 +7,7 @@ use serde_json::json;
 
 const SPO_JSON_ACCEPT: &str = "application/json;odata=nometadata";
 const SPO_JSON_CONTENT: &str = "application/json;odata=nometadata";
+const SPO_JSON_VERBOSE: &str = "application/json;odata=verbose";
 
 const SYSTEM_LIBRARY_TITLES: &[&str] = &[
     "Style Library",
@@ -38,8 +39,16 @@ struct RawList {
     hidden: bool,
     #[serde(rename = "ItemCount", default)]
     item_count: i64,
+    #[serde(rename = "ExcludeFromOfflineClient", default)]
+    exclude_from_offline_client: bool,
     #[serde(rename = "RootFolder")]
     root_folder: Option<RawRootFolder>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawOfflineSyncFlag {
+    #[serde(rename = "ExcludeFromOfflineClient", default)]
+    exclude_from_offline_client: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,7 +119,7 @@ impl SpoClient {
         let base = site_url.trim_end_matches('/');
         let token = self.token(base).await?;
         let url = format!(
-            "{}/_api/web/lists?$select=Id,Title,BaseTemplate,Hidden,ItemCount,RootFolder/ServerRelativeUrl&$expand=RootFolder&$filter=BaseTemplate eq 101 and Hidden eq false",
+            "{}/_api/web/lists?$select=Id,Title,BaseTemplate,Hidden,ItemCount,ExcludeFromOfflineClient,RootFolder/ServerRelativeUrl&$expand=RootFolder&$filter=BaseTemplate eq 101 and Hidden eq false",
             base
         );
 
@@ -150,6 +159,7 @@ impl SpoClient {
                     server_relative_url: srv_url,
                     item_count: l.item_count,
                     is_default_documents: is_default,
+                    exclude_from_offline_client: l.exclude_from_offline_client,
                 })
             })
             .collect();
@@ -251,6 +261,76 @@ impl SpoClient {
             return Err(anyhow!(
                 "Error eliminando biblioteca {}: {}",
                 library_id,
+                err_txt
+            ));
+        }
+        Ok(())
+    }
+
+    /// Read the current `ExcludeFromOfflineClient` flag of a Document Library.
+    pub async fn get_library_offline_sync(
+        &self,
+        site_url: &str,
+        library_id: &str,
+    ) -> Result<bool> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let url = format!(
+            "{}/_api/web/lists(guid'{}')?$select=ExcludeFromOfflineClient",
+            base, library_id
+        );
+
+        let resp = send_with_retry(|| {
+            self.http
+                .get(&url)
+                .bearer_auth(&token)
+                .header("Accept", SPO_JSON_ACCEPT)
+        })
+        .await?;
+
+        let raw: RawOfflineSyncFlag = check_json_response(
+            resp,
+            &format!("Error leyendo ExcludeFromOfflineClient de biblioteca '{}'", library_id),
+        )
+        .await?;
+        Ok(raw.exclude_from_offline_client)
+    }
+
+    /// Enable (`exclude=false`) or disable (`exclude=true`) offline sync / OneDrive shortcuts for a Document Library.
+    pub async fn set_library_offline_sync(
+        &self,
+        site_url: &str,
+        library_id: &str,
+        exclude: bool,
+    ) -> Result<()> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let url = format!("{}/_api/web/lists(guid'{}')", base, library_id);
+        let payload = serde_json::to_string(&json!({
+            "__metadata": { "type": "SP.List" },
+            "ExcludeFromOfflineClient": exclude
+        }))?;
+
+        let resp = send_with_retry(|| {
+            self.http
+                .post(&url)
+                .bearer_auth(&token)
+                .header("Accept", SPO_JSON_VERBOSE)
+                .header("Content-Type", SPO_JSON_VERBOSE)
+                .header("X-HTTP-Method", "MERGE")
+                .header("If-Match", "*")
+                .body(payload.clone())
+        })
+        .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_txt = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Error actualizando ExcludeFromOfflineClient={} en biblioteca '{}' (HTTP {}): {}",
+                exclude,
+                library_id,
+                status,
                 err_txt
             ));
         }

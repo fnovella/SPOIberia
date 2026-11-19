@@ -202,6 +202,40 @@ fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
         None => String::new(),
     };
 
+    let site_sync_span = match app
+        .current_site
+        .as_ref()
+        .and_then(|s| app.staging.site_sync_staging_state(&s.url))
+    {
+        Some(true) => Span::styled(
+            " [Sync: BLOQUEAR*] ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Some(false) => Span::styled(
+            " [Sync: ACTIVAR*] ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        ),
+        None => match app.site_exclude_from_offline_client {
+            Some(true) => Span::styled(
+                " [Sync: BLOQUEADA] ",
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Some(false) => Span::styled(
+                " [Sync: ACTIVA] ",
+                Style::default().fg(Color::LightGreen),
+            ),
+            None => Span::raw(""),
+        },
+    };
+
     let line = Line::from(vec![
         Span::styled(
             " SPOIberia ",
@@ -215,6 +249,7 @@ fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
             Style::default().fg(Color::White),
         ),
         Span::styled(site_context, Style::default().fg(Color::Yellow)),
+        site_sync_span,
         Span::raw("  "),
         staging_span,
     ]);
@@ -658,6 +693,11 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
 
     let left_focused = app.focus == PaneFocus::Left;
     let right_focused = app.focus == PaneFocus::Right;
+    let site_url = app
+        .current_site
+        .as_ref()
+        .map(|s| s.url.as_str())
+        .unwrap_or("");
 
     let lib_items: Vec<ListItem<'_>> = app
         .libraries
@@ -670,12 +710,34 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
             } else {
                 Color::Reset
             };
+            let (sync_tag, sync_style) =
+                match app.staging.library_sync_staging_state(site_url, &l.id) {
+                    Some(true) => (
+                        "[-Sync*] ",
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .bg(bg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Some(false) => (
+                        "[+Sync*] ",
+                        Style::default()
+                            .fg(Color::LightGreen)
+                            .bg(bg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    None if l.exclude_from_offline_client => {
+                        ("[NoSync] ", Style::default().fg(Color::LightRed).bg(bg))
+                    }
+                    None => ("[Sync] ", Style::default().fg(Color::Cyan).bg(bg)),
+                };
             let def_tag = if l.is_default_documents {
                 "[Default] "
             } else {
                 ""
             };
             ListItem::new(Line::from(vec![
+                Span::styled(sync_tag, sync_style),
                 Span::styled(def_tag, Style::default().fg(Color::LightGreen).bg(bg)),
                 Span::styled(
                     format!("{} ({} ítems)", l.title, l.item_count),
@@ -689,7 +751,7 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let lib_block = Block::default()
-        .title(" Bibliotecas [b: Nueva Biblioteca] ")
+        .title(" Bibliotecas [b: Nueva | o: Sync] ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if left_focused {
@@ -916,9 +978,12 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
             .map(|(idx, op)| {
                 let is_sel = idx == app.selected_staging_idx && left_focused;
                 let label = op.label();
-                let fg = if label.starts_with("[+]") || label.starts_with("[+Rol]") {
+                let fg = if label.starts_with("[+]")
+                    || label.starts_with("[+Rol]")
+                    || label.starts_with("[+Sync]")
+                {
                     Color::LightGreen
-                } else if label.starts_with("[-]") {
+                } else if label.starts_with("[-]") || label.starts_with("[-Sync]") {
                     Color::LightRed
                 } else {
                     Color::Yellow
@@ -1123,10 +1188,10 @@ fn context_help_keys(app: &App) -> &'static str {
         }
         Screen::SiteWorkspace => match app.tab {
             WorkspaceTab::GroupsAndUsers => {
-                "Tab/←/→: Cambiar Panel | a: Asignar Usuario | d: Remover Usuario | g: Crear Grupo | A: APLICAR Staging | H: Historial/Rollback | Esc: Sitios"
+                "Tab/←/→: Cambiar Panel | a: Asignar Usuario | d: Remover Usuario | g: Crear Grupo | O: Sync Sitio | A: APLICAR Staging | H: Historial/Rollback | Esc: Sitios"
             }
             WorkspaceTab::LibrariesAndFolders => {
-                "Tab/←/→: Panel | n: Crear Carpeta | b: Crear Biblioteca | p: Asignar Permiso | i: Importar CSV/JSON | e: Exportar | A: APLICAR | Esc: Sitios"
+                "Tab/←/→: Panel | o: Sync Bib | O: Sync Sitio+Bibs | n: Carpeta | b: Bib | p: Permiso | i/e: CSV/JSON | A: APLICAR"
             }
             WorkspaceTab::CloneSite => {
                 "↑/↓: Mover Opción | Espacio: Activar/Desactivar | s: Cambiar URL Origen | Enter: Generar Plan en Staging | A: APLICAR | Esc: Sitios"
@@ -1142,7 +1207,7 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
     match &app.modal {
         Modal::None => {}
         Modal::Help => {
-            let area = centered_rect(72, 75, f.area());
+            let area = centered_rect(76, 82, f.area());
             f.render_widget(Clear, area);
             let lines = vec![
                 Line::from(Span::styled(
@@ -1162,8 +1227,9 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 Line::from("  d / Supr    Encolar baja del usuario seleccionado del grupo"),
                 Line::from("  g           Crear nuevo grupo de SharePoint en el sitio"),
                 Line::from(""),
-                Line::from("• Módulo 2 — Bibliotecas, Carpetas y Matriz CSV/JSON (Pestaña 2):"),
+                Line::from("• Módulo 2 — Bibliotecas, Carpetas y Sync Offline (Pestaña 2):"),
                 Line::from("  n / b       Crear nueva carpeta (n) o nueva biblioteca (b)"),
+                Line::from("  o / O       Alternar sync offline/OneDrive en biblioteca (o) o sitio+bibliotecas (O)"),
                 Line::from("  p           Romper herencia y asignar rol (Read/Contribute/Edit/Full Control) a un grupo"),
                 Line::from("  i / e       Importar matriz de carpetas/permisos CSV/JSON (i) o exportar (e)"),
                 Line::from(""),
@@ -1585,5 +1651,79 @@ mod tests {
         assert!(right_col_small_again.contains('▲'));
         assert!(right_col_small_again.contains('▼'));
         assert_eq!(app.scroll.sites.get(), 13);
+    }
+
+    #[test]
+    fn test_workspace_renders_offline_sync_badges() {
+        use crate::models::{SpoLibrary, StagingOp};
+
+        let mut app = make_test_app();
+        let site_url = "https://contoso.sharepoint.com/sites/Obra1".to_string();
+        app.screen = Screen::SiteWorkspace;
+        app.tab = WorkspaceTab::LibrariesAndFolders;
+        app.current_site = Some(SpoSite {
+            title: "Obra 1".to_string(),
+            url: site_url.clone(),
+            description: None,
+            role: SiteRole::SiteAdmin,
+            is_site_admin: true,
+        });
+        app.site_exclude_from_offline_client = Some(true);
+        app.libraries = vec![
+            SpoLibrary {
+                id: "lib-1".to_string(),
+                title: "Docs".to_string(),
+                server_relative_url: "/sites/Obra1/Shared Documents".to_string(),
+                item_count: 42,
+                is_default_documents: true,
+                exclude_from_offline_client: true,
+            },
+            SpoLibrary {
+                id: "lib-2".to_string(),
+                title: "Archivos".to_string(),
+                server_relative_url: "/sites/Obra1/Archivos".to_string(),
+                item_count: 5,
+                is_default_documents: false,
+                exclude_from_offline_client: false,
+            },
+        ];
+
+        let backend = TestBackend::new(140, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered.contains("[Sync: BLOQUEADA]"),
+            "expected site blocked sync badge in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("[NoSync]"),
+            "expected library [NoSync] tag in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("[Sync]"),
+            "expected library [Sync] tag in:\n{rendered}"
+        );
+
+        // Now verify active site badge and staged library disable badge
+        app.site_exclude_from_offline_client = Some(false);
+        app.staging.push(StagingOp::SetLibraryOfflineSync {
+            site_url,
+            library_id: "lib-2".to_string(),
+            library_title: "Archivos".to_string(),
+            exclude_from_offline_client: true,
+        });
+
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let rendered_staged = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered_staged.contains("[Sync: ACTIVA]"),
+            "expected site active sync badge in:\n{rendered_staged}"
+        );
+        assert!(
+            rendered_staged.contains("[-Sync*]"),
+            "expected staged library [-Sync*] tag in:\n{rendered_staged}"
+        );
     }
 }

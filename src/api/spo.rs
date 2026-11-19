@@ -1,15 +1,21 @@
 use crate::api::graph::GraphClient;
 use crate::api::{check_json_response, send_with_retry};
 use crate::auth::AuthManager;
-use crate::models::{DirectoryUser, GroupKind, SiteRole, SpoGroup, SpoSite, SpoUser};
+use crate::models::{
+    DirectoryUser, GroupKind, LibrarySyncStatus, SiteRole, SiteSyncStatus, SpoGroup, SpoSite,
+    SpoUser,
+};
 use anyhow::{anyhow, Result};
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 
 const SPO_JSON_ACCEPT: &str = "application/json;odata=nometadata";
 const SPO_JSON_CONTENT: &str = "application/json;odata=nometadata";
+const SPO_JSON_VERBOSE: &str = "application/json;odata=verbose";
 
 #[derive(Clone)]
 pub struct SpoClient {
@@ -145,6 +151,22 @@ struct RawSpoUser {
     is_site_admin: bool,
     #[serde(rename = "PrincipalType", default)]
     principal_type: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawWebOfflineSync {
+    #[serde(rename = "Title")]
+    title: Option<String>,
+    #[serde(rename = "ExcludeFromOfflineClient", default)]
+    exclude_from_offline_client: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSubWeb {
+    #[serde(rename = "Url")]
+    url: String,
+    #[serde(rename = "Title")]
+    title: Option<String>,
 }
 
 impl SpoClient {
@@ -950,6 +972,165 @@ impl SpoClient {
             ));
         }
         Ok(())
+    }
+
+    /// Read site title and `ExcludeFromOfflineClient` flag (`GET /_api/web?$select=Title,ExcludeFromOfflineClient`).
+    pub async fn get_web_offline_sync(&self, site_url: &str) -> Result<(String, bool)> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let url = format!("{}/_api/web?$select=Title,ExcludeFromOfflineClient", base);
+
+        let resp = send_with_retry(|| {
+            self.http
+                .get(&url)
+                .bearer_auth(&token)
+                .header("Accept", SPO_JSON_ACCEPT)
+        })
+        .await?;
+
+        let raw: RawWebOfflineSync = check_json_response(
+            resp,
+            &format!("Error leyendo ExcludeFromOfflineClient de '{}'", base),
+        )
+        .await?;
+        let title = raw
+            .title
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| base.to_string());
+        Ok((title, raw.exclude_from_offline_client))
+    }
+
+    /// Enable (`exclude=false`) or disable (`exclude=true`) offline sync / OneDrive shortcuts at the SharePoint site (`SP.Web`) level.
+    pub async fn set_web_offline_sync(&self, site_url: &str, exclude: bool) -> Result<()> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let url = format!("{}/_api/web", base);
+        let payload = serde_json::to_string(&json!({
+            "__metadata": { "type": "SP.Web" },
+            "ExcludeFromOfflineClient": exclude
+        }))?;
+
+        let resp = send_with_retry(|| {
+            self.http
+                .post(&url)
+                .bearer_auth(&token)
+                .header("Accept", SPO_JSON_VERBOSE)
+                .header("Content-Type", SPO_JSON_VERBOSE)
+                .header("X-HTTP-Method", "MERGE")
+                .header("If-Match", "*")
+                .body(payload.clone())
+        })
+        .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_txt = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Error actualizando ExcludeFromOfflineClient={} en el sitio '{}' (HTTP {}): {}",
+                exclude,
+                base,
+                status,
+                err_txt
+            ));
+        }
+        Ok(())
+    }
+
+    /// List direct subsites (`/_api/web/webs?$select=Url,Title`) of a SharePoint site.
+    pub async fn get_subwebs(&self, site_url: &str) -> Result<Vec<(String, String)>> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let url = format!("{}/_api/web/webs?$select=Url,Title", base);
+
+        let resp = send_with_retry(|| {
+            self.http
+                .get(&url)
+                .bearer_auth(&token)
+                .header("Accept", SPO_JSON_ACCEPT)
+        })
+        .await?;
+
+        let raw: SpoValueList<RawSubWeb> =
+            check_json_response(resp, &format!("Error listando subsitios de '{}'", base)).await?;
+
+        Ok(raw
+            .value
+            .into_iter()
+            .map(|w| {
+                let clean_url = w.url.trim_end_matches('/').to_string();
+                let title = w.title.unwrap_or_else(|| clean_url.clone());
+                (clean_url, title)
+            })
+            .collect())
+    }
+
+    /// Inspect offline sync status (`ExcludeFromOfflineClient`) for a site, its document libraries, and optionally its subsites.
+    pub async fn get_site_sync_status(
+        &self,
+        site_url: &str,
+        include_subsites: bool,
+    ) -> Result<SiteSyncStatus> {
+        let mut visited = HashSet::new();
+        self.collect_site_sync_status_recursive(
+            site_url.trim_end_matches('/').to_string(),
+            include_subsites,
+            &mut visited,
+        )
+        .await
+    }
+
+    fn collect_site_sync_status_recursive<'a>(
+        &'a self,
+        site_url: String,
+        include_subsites: bool,
+        visited: &'a mut HashSet<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<SiteSyncStatus>> + Send + 'a>> {
+        Box::pin(async move {
+            let base = site_url.trim_end_matches('/').to_string();
+            visited.insert(base.to_lowercase());
+
+            let ((site_title, web_exclude), libs) = tokio::try_join!(
+                self.get_web_offline_sync(&base),
+                self.get_document_libraries(&base)
+            )?;
+
+            let libraries = libs
+                .into_iter()
+                .map(|l| LibrarySyncStatus {
+                    id: l.id,
+                    title: l.title,
+                    server_relative_url: l.server_relative_url,
+                    is_default_documents: l.is_default_documents,
+                    exclude_from_offline_client: l.exclude_from_offline_client,
+                    sync_enabled: !l.exclude_from_offline_client,
+                })
+                .collect();
+
+            let mut subsites = Vec::new();
+            if include_subsites {
+                for (sub_url, _) in self.get_subwebs(&base).await.unwrap_or_default() {
+                    let clean_sub = sub_url.trim_end_matches('/').to_string();
+                    if clean_sub.is_empty() || visited.contains(&clean_sub.to_lowercase()) {
+                        continue;
+                    }
+                    if let Ok(sub_status) = self
+                        .collect_site_sync_status_recursive(clean_sub, true, visited)
+                        .await
+                    {
+                        subsites.push(sub_status);
+                    }
+                }
+            }
+
+            Ok(SiteSyncStatus {
+                site_url: base,
+                site_title,
+                exclude_from_offline_client: web_exclude,
+                sync_enabled: !web_exclude,
+                libraries,
+                subsites,
+            })
+        })
     }
 }
 

@@ -108,12 +108,106 @@ impl StagingQueue {
                     return;
                 }
             }
+            StagingOp::SetSiteOfflineSync {
+                site_url,
+                exclude_from_offline_client,
+                ..
+            } => {
+                let target_site = site_url.trim_end_matches('/');
+                if let Some(pos) = self.ops.iter().position(|existing| {
+                    matches!(
+                        existing,
+                        StagingOp::SetSiteOfflineSync { site_url: s, .. }
+                            if s.trim_end_matches('/').eq_ignore_ascii_case(target_site)
+                    )
+                }) {
+                    if let StagingOp::SetSiteOfflineSync {
+                        exclude_from_offline_client: prev_ex,
+                        ..
+                    } = &self.ops[pos]
+                    {
+                        if *prev_ex != *exclude_from_offline_client {
+                            self.ops.remove(pos);
+                        }
+                        return;
+                    }
+                }
+            }
+            StagingOp::SetLibraryOfflineSync {
+                site_url,
+                library_id,
+                exclude_from_offline_client,
+                ..
+            } => {
+                let target_site = site_url.trim_end_matches('/');
+                if let Some(pos) = self.ops.iter().position(|existing| {
+                    matches!(
+                        existing,
+                        StagingOp::SetLibraryOfflineSync {
+                            site_url: s,
+                            library_id: id,
+                            ..
+                        } if s.trim_end_matches('/').eq_ignore_ascii_case(target_site)
+                            && id.eq_ignore_ascii_case(library_id)
+                    )
+                }) {
+                    if let StagingOp::SetLibraryOfflineSync {
+                        exclude_from_offline_client: prev_ex,
+                        ..
+                    } = &self.ops[pos]
+                    {
+                        if *prev_ex != *exclude_from_offline_client {
+                            self.ops.remove(pos);
+                        }
+                        return;
+                    }
+                }
+            }
             _ => {}
         }
 
         if !self.ops.contains(&op) {
             self.ops.push(op);
         }
+    }
+
+    /// Return the staged `ExcludeFromOfflineClient` target for the site, if a site-level sync change is pending.
+    pub fn site_sync_staging_state(&self, site_url: &str) -> Option<bool> {
+        let target_site = site_url.trim_end_matches('/');
+        for op in &self.ops {
+            if let StagingOp::SetSiteOfflineSync {
+                site_url: s,
+                exclude_from_offline_client,
+                ..
+            } = op
+            {
+                if s.trim_end_matches('/').eq_ignore_ascii_case(target_site) {
+                    return Some(*exclude_from_offline_client);
+                }
+            }
+        }
+        None
+    }
+
+    /// Return the staged `ExcludeFromOfflineClient` target for a library, if a library-level sync change is pending.
+    pub fn library_sync_staging_state(&self, site_url: &str, library_id: &str) -> Option<bool> {
+        let target_site = site_url.trim_end_matches('/');
+        for op in &self.ops {
+            if let StagingOp::SetLibraryOfflineSync {
+                site_url: s,
+                library_id: id,
+                exclude_from_offline_client,
+                ..
+            } = op
+            {
+                if s.trim_end_matches('/').eq_ignore_ascii_case(target_site)
+                    && id.eq_ignore_ascii_case(library_id)
+                {
+                    return Some(*exclude_from_offline_client);
+                }
+            }
+        }
+        None
     }
 
     /// Check if a user is currently staged to be added (`Some(true)`) or removed (`Some(false)`) in a given group.
@@ -206,6 +300,7 @@ impl StagingQueue {
         let mut folders = 0usize;
         let mut perms = 0usize;
         let mut copies = 0usize;
+        let mut sync_changes = 0usize;
 
         for op in &self.ops {
             match op {
@@ -217,6 +312,9 @@ impl StagingQueue {
                 | StagingOp::AssignFolderRole { .. }
                 | StagingOp::AssignSiteRole { .. } => perms += 1,
                 StagingOp::ServerSideCopy { .. } => copies += 1,
+                StagingOp::SetSiteOfflineSync { .. } | StagingOp::SetLibraryOfflineSync { .. } => {
+                    sync_changes += 1
+                }
             }
         }
 
@@ -238,6 +336,9 @@ impl StagingQueue {
         }
         if copies > 0 {
             parts.push(format!("{} copia(s) server-side", copies));
+        }
+        if sync_changes > 0 {
+            parts.push(format!("{} cambio(s) sync offline", sync_changes));
         }
         parts.join(", ")
     }
@@ -608,6 +709,55 @@ impl TransactionExecutor {
                     })
                 }
             }
+            StagingOp::SetSiteOfflineSync {
+                site_url,
+                site_title,
+                exclude_from_offline_client,
+            } => {
+                let (_, prev) = self.spo.get_web_offline_sync(site_url).await?;
+                if prev == *exclude_from_offline_client {
+                    return Ok(ReversePayload::NoOp {
+                        reason: format!(
+                            "El sitio '{}' ya tenía ExcludeFromOfflineClient={}",
+                            site_title, prev
+                        ),
+                    });
+                }
+                self.spo
+                    .set_web_offline_sync(site_url, *exclude_from_offline_client)
+                    .await?;
+                Ok(ReversePayload::RestoreSiteOfflineSync {
+                    site_url: site_url.clone(),
+                    previous_exclude_from_offline_client: prev,
+                })
+            }
+            StagingOp::SetLibraryOfflineSync {
+                site_url,
+                library_id,
+                library_title,
+                exclude_from_offline_client,
+            } => {
+                let prev = self
+                    .spo
+                    .get_library_offline_sync(site_url, library_id)
+                    .await?;
+                if prev == *exclude_from_offline_client {
+                    return Ok(ReversePayload::NoOp {
+                        reason: format!(
+                            "La biblioteca '{}' ya tenía ExcludeFromOfflineClient={}",
+                            library_title, prev
+                        ),
+                    });
+                }
+                self.spo
+                    .set_library_offline_sync(site_url, library_id, *exclude_from_offline_client)
+                    .await?;
+                Ok(ReversePayload::RestoreLibraryOfflineSync {
+                    site_url: site_url.clone(),
+                    library_id: library_id.clone(),
+                    previous_exclude_from_offline_client: prev,
+                })
+            }
         }
     }
 
@@ -789,6 +939,27 @@ impl TransactionExecutor {
                     .remove_site_role_assignment(site_url, *principal_id, *role_def_id)
                     .await
             }
+            ReversePayload::RestoreSiteOfflineSync {
+                site_url,
+                previous_exclude_from_offline_client,
+            } => {
+                self.spo
+                    .set_web_offline_sync(site_url, *previous_exclude_from_offline_client)
+                    .await
+            }
+            ReversePayload::RestoreLibraryOfflineSync {
+                site_url,
+                library_id,
+                previous_exclude_from_offline_client,
+            } => {
+                self.spo
+                    .set_library_offline_sync(
+                        site_url,
+                        library_id,
+                        *previous_exclude_from_offline_client,
+                    )
+                    .await
+            }
             ReversePayload::NoOp { .. } => Ok(()),
         }
     }
@@ -824,5 +995,57 @@ mod tests {
         });
         assert!(q.is_empty());
         assert_eq!(q.user_group_staging_state(site, 7, "ana@contoso.com"), None);
+    }
+
+    #[test]
+    fn test_staging_queue_offline_sync_neutralization() {
+        let mut q = StagingQueue::new();
+        let site = "https://contoso.sharepoint.com/sites/Test";
+        let lib_id = "11111111-2222-3333-4444-555555555555";
+
+        q.push(StagingOp::SetSiteOfflineSync {
+            site_url: site.to_string(),
+            site_title: "Test".to_string(),
+            exclude_from_offline_client: true,
+        });
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.site_sync_staging_state(site), Some(true));
+
+        // Duplicate toggle in same direction (even with trailing slash / different title) should not duplicate
+        q.push(StagingOp::SetSiteOfflineSync {
+            site_url: format!("{}/", site),
+            site_title: "Test Site".to_string(),
+            exclude_from_offline_client: true,
+        });
+        assert_eq!(q.len(), 1);
+
+        q.push(StagingOp::SetLibraryOfflineSync {
+            site_url: site.to_string(),
+            library_id: lib_id.to_string(),
+            library_title: "Documentos".to_string(),
+            exclude_from_offline_client: true,
+        });
+        assert_eq!(q.len(), 2);
+        assert_eq!(q.library_sync_staging_state(site, lib_id), Some(true));
+        assert!(q.build_summary().contains("2 cambio(s) sync offline"));
+
+        // Opposite site toggle neutralizes the pending site op
+        q.push(StagingOp::SetSiteOfflineSync {
+            site_url: site.to_string(),
+            site_title: "Test".to_string(),
+            exclude_from_offline_client: false,
+        });
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.site_sync_staging_state(site), None);
+
+        // Opposite library toggle neutralizes the pending library op
+        q.push(StagingOp::SetLibraryOfflineSync {
+            site_url: site.to_string(),
+            library_id: lib_id.to_string(),
+            library_title: "Documentos".to_string(),
+            exclude_from_offline_client: false,
+        });
+        assert!(q.is_empty());
+        assert_eq!(q.library_sync_staging_state(site, lib_id), None);
     }
 }

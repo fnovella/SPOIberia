@@ -279,6 +279,10 @@ fn handle_workspace_keys(app: &mut App, key: KeyEvent) {
             }
             return;
         }
+        KeyCode::Char('O') => {
+            app.toggle_site_and_libraries_offline_sync();
+            return;
+        }
         KeyCode::Tab | KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
             app.focus = match app.focus {
                 PaneFocus::Left => PaneFocus::Right,
@@ -425,6 +429,9 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
                 value: String::new(),
                 kind: TextInputKind::CreateDocumentLibrary,
             };
+        }
+        KeyCode::Char('o') => {
+            app.toggle_selected_library_offline_sync();
         }
         KeyCode::Char('p') => {
             let lib_title = app

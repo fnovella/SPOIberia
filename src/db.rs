@@ -384,4 +384,85 @@ mod tests {
         assert_eq!(updated.status, "REVERTED");
         assert!(updated.reverted_at.is_some());
     }
+
+    #[test]
+    fn test_sqlite_offline_sync_reverse_payload_roundtrip() {
+        let db = Database::open_in_memory().expect("in-memory sqlite");
+        let site = "https://contoso.sharepoint.com/sites/Obra1";
+        let lib_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        let tx_id = db
+            .create_transaction(
+                "admin@contoso.com",
+                site,
+                "Obra 1",
+                "CLI",
+                Some("Disable offline sync"),
+                "2 cambio(s) sync offline",
+            )
+            .unwrap();
+
+        let rev_site = ReversePayload::RestoreSiteOfflineSync {
+            site_url: site.to_string(),
+            previous_exclude_from_offline_client: false,
+        };
+        let rev_lib = ReversePayload::RestoreLibraryOfflineSync {
+            site_url: site.to_string(),
+            library_id: lib_id.to_string(),
+            previous_exclude_from_offline_client: true,
+        };
+
+        db.record_operation(
+            tx_id,
+            1,
+            "SET_SITE_OFFLINE_SYNC",
+            "[-Sync] Desactivar sincronización offline en el sitio 'Obra 1'",
+            "{}",
+            &rev_site,
+            "APPLIED",
+            None,
+        )
+        .unwrap();
+        db.record_operation(
+            tx_id,
+            2,
+            "SET_LIBRARY_OFFLINE_SYNC",
+            "[+Sync] Activar sincronización offline en biblioteca 'Documentos'",
+            "{}",
+            &rev_lib,
+            "APPLIED",
+            None,
+        )
+        .unwrap();
+        db.update_transaction_status(tx_id, "APPLIED").unwrap();
+
+        let ops = db.get_transaction_operations(tx_id).unwrap();
+        assert_eq!(ops.len(), 2);
+
+        let parsed_site: ReversePayload = serde_json::from_str(&ops[0].reverse_payload).unwrap();
+        match parsed_site {
+            ReversePayload::RestoreSiteOfflineSync {
+                site_url,
+                previous_exclude_from_offline_client,
+            } => {
+                assert_eq!(site_url, site);
+                assert!(!previous_exclude_from_offline_client);
+            }
+            other => panic!("unexpected reverse payload: {:?}", other),
+        }
+
+        let parsed_lib: ReversePayload = serde_json::from_str(&ops[1].reverse_payload).unwrap();
+        match parsed_lib {
+            ReversePayload::RestoreLibraryOfflineSync {
+                site_url,
+                library_id,
+                previous_exclude_from_offline_client,
+            } => {
+                assert_eq!(site_url, site);
+                assert_eq!(library_id, lib_id);
+                assert!(previous_exclude_from_offline_client);
+            }
+            other => panic!("unexpected reverse payload: {:?}", other),
+        }
+    }
 }

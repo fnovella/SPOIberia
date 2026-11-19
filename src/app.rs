@@ -104,6 +104,7 @@ pub enum AsyncEvent {
         libraries: Vec<SpoLibrary>,
         initial_folders: Vec<SpoFolder>,
         transactions: Vec<TransactionRecord>,
+        site_exclude_from_offline_client: Option<bool>,
     },
     GroupMembersLoaded {
         group_id: i64,
@@ -177,6 +178,7 @@ pub struct App {
     pub site_filter: String,
     pub selected_site_idx: usize,
     pub current_site: Option<SpoSite>,
+    pub site_exclude_from_offline_client: Option<bool>,
 
     // Tab 1: Groups & Users state
     pub groups: Vec<SpoGroup>,
@@ -272,6 +274,7 @@ impl App {
             site_filter: String::new(),
             selected_site_idx: 0,
             current_site: None,
+            site_exclude_from_offline_client: None,
             groups: Vec::new(),
             selected_group_idx: 0,
             group_members: Vec::new(),
@@ -479,6 +482,7 @@ impl App {
     pub fn enter_site_workspace(&mut self, site: SpoSite) {
         let site_url = site.url.clone();
         self.current_site = Some(site);
+        self.site_exclude_from_offline_client = None;
         self.screen = Screen::SiteWorkspace;
         self.tab = WorkspaceTab::GroupsAndUsers;
         self.focus = PaneFocus::Left;
@@ -501,8 +505,11 @@ impl App {
         let url = site_url.to_string();
 
         tokio::spawn(async move {
-            let groups_res = spo.get_site_groups(&url).await;
-            let libs_res = spo.get_document_libraries(&url).await;
+            let (groups_res, libs_res, web_sync_res) = tokio::join!(
+                spo.get_site_groups(&url),
+                spo.get_document_libraries(&url),
+                spo.get_web_offline_sync(&url)
+            );
             match groups_res {
                 Ok(groups) => {
                     let initial_members = if let Some(first_grp) = groups.first() {
@@ -521,12 +528,14 @@ impl App {
                         Vec::new()
                     };
                     let transactions = db.list_transactions(Some(&url), 50).unwrap_or_default();
+                    let site_exclude_from_offline_client = web_sync_res.ok().map(|(_, ex)| ex);
                     let _ = tx.send(AsyncEvent::SiteWorkspaceLoaded {
                         groups,
                         initial_members,
                         libraries,
                         initial_folders,
                         transactions,
+                        site_exclude_from_offline_client,
                     });
                 }
                 Err(e) => {
@@ -534,6 +543,121 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Toggle offline synchronization (`ExcludeFromOfflineClient`) for the currently selected document library in Staging.
+    pub fn toggle_selected_library_offline_sync(&mut self) {
+        let Some(site_url) = self.current_site.as_ref().map(|s| s.url.clone()) else {
+            return;
+        };
+        let Some(lib) = self.selected_library().cloned() else {
+            self.status_toast = Some((
+                "No hay ninguna biblioteca seleccionada".to_string(),
+                true,
+            ));
+            return;
+        };
+        let effective_excluded = self
+            .staging
+            .library_sync_staging_state(&site_url, &lib.id)
+            .unwrap_or(lib.exclude_from_offline_client);
+        let target_exclude = !effective_excluded;
+
+        self.staging.push(StagingOp::SetLibraryOfflineSync {
+            site_url: site_url.clone(),
+            library_id: lib.id.clone(),
+            library_title: lib.title.clone(),
+            exclude_from_offline_client: target_exclude,
+        });
+
+        self.status_toast = Some((
+            match self.staging.library_sync_staging_state(&site_url, &lib.id) {
+                Some(true) => format!(
+                    "Encolado bloqueo de sync offline en biblioteca '{}'. Pulsa 'A' para Aplicar.",
+                    lib.title
+                ),
+                Some(false) => format!(
+                    "Encolada activación de sync offline en biblioteca '{}'. Pulsa 'A' para Aplicar.",
+                    lib.title
+                ),
+                None => format!(
+                    "Cancelado cambio pendiente de sync en biblioteca '{}' (neutralizado en Staging).",
+                    lib.title
+                ),
+            },
+            false,
+        ));
+    }
+
+    /// Toggle offline synchronization (`ExcludeFromOfflineClient`) for the whole site (`SP.Web`) and all its loaded libraries in Staging.
+    pub fn toggle_site_and_libraries_offline_sync(&mut self) {
+        let Some((site_url, site_title)) = self
+            .current_site
+            .as_ref()
+            .map(|s| (s.url.clone(), s.title.clone()))
+        else {
+            return;
+        };
+
+        let site_eff = self
+            .staging
+            .site_sync_staging_state(&site_url)
+            .or(self.site_exclude_from_offline_client)
+            .unwrap_or(false);
+
+        let all_libs_excluded = self.libraries.iter().all(|l| {
+            self.staging
+                .library_sync_staging_state(&site_url, &l.id)
+                .unwrap_or(l.exclude_from_offline_client)
+        });
+        let target_exclude = !(site_eff && all_libs_excluded);
+
+        if site_eff != target_exclude {
+            self.staging.push(StagingOp::SetSiteOfflineSync {
+                site_url: site_url.clone(),
+                site_title: site_title.clone(),
+                exclude_from_offline_client: target_exclude,
+            });
+        }
+
+        for lib in self.libraries.clone() {
+            let lib_eff = self
+                .staging
+                .library_sync_staging_state(&site_url, &lib.id)
+                .unwrap_or(lib.exclude_from_offline_client);
+            if lib_eff != target_exclude {
+                self.staging.push(StagingOp::SetLibraryOfflineSync {
+                    site_url: site_url.clone(),
+                    library_id: lib.id,
+                    library_title: lib.title,
+                    exclude_from_offline_client: target_exclude,
+                });
+            }
+        }
+
+        let any_sync_pending = self.staging.site_sync_staging_state(&site_url).is_some()
+            || self
+                .libraries
+                .iter()
+                .any(|l| self.staging.library_sync_staging_state(&site_url, &l.id).is_some());
+
+        let msg = if !any_sync_pending {
+            format!(
+                "Cancelados los cambios pendientes de sync offline en '{}' (Staging neutralizado).",
+                site_title
+            )
+        } else if target_exclude {
+            format!(
+                "Encolado bloqueo de sync offline en sitio '{}' y sus bibliotecas. Pulsa 'A' para Aplicar.",
+                site_title
+            )
+        } else {
+            format!(
+                "Encolada activación de sync offline en sitio '{}' y sus bibliotecas. Pulsa 'A' para Aplicar.",
+                site_title
+            )
+        };
+        self.status_toast = Some((msg, false));
     }
 
     pub fn trigger_load_group_members(&mut self, group_id: i64) {
@@ -859,6 +983,7 @@ impl App {
                 libraries,
                 initial_folders,
                 transactions,
+                site_exclude_from_offline_client,
             } => {
                 self.busy_message = None;
                 self.groups = groups;
@@ -866,6 +991,7 @@ impl App {
                 self.libraries = libraries;
                 self.folders = initial_folders;
                 self.transactions = transactions;
+                self.site_exclude_from_offline_client = site_exclude_from_offline_client;
                 if let Some(first_tx) = self.transactions.first() {
                     self.selected_tx_ops = self
                         .db

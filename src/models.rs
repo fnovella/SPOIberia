@@ -147,6 +147,31 @@ pub struct SpoLibrary {
     pub server_relative_url: String,
     pub item_count: i64,
     pub is_default_documents: bool,
+    #[serde(default)]
+    pub exclude_from_offline_client: bool,
+}
+
+/// Offline client synchronization status (`ExcludeFromOfflineClient`) for a site and its libraries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteSyncStatus {
+    pub site_url: String,
+    pub site_title: String,
+    pub exclude_from_offline_client: bool,
+    pub sync_enabled: bool,
+    pub libraries: Vec<LibrarySyncStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subsites: Vec<SiteSyncStatus>,
+}
+
+/// Offline client synchronization status for a single SharePoint Document Library.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarySyncStatus {
+    pub id: String,
+    pub title: String,
+    pub server_relative_url: String,
+    pub is_default_documents: bool,
+    pub exclude_from_offline_client: bool,
+    pub sync_enabled: bool,
 }
 
 /// Folder inside a SharePoint Document Library.
@@ -245,6 +270,18 @@ pub enum StagingOp {
         is_folder: bool,
         overwrite: bool,
     },
+    // Phase 4: Offline Sync / OneDrive Shortcut control (`ExcludeFromOfflineClient`)
+    SetSiteOfflineSync {
+        site_url: String,
+        site_title: String,
+        exclude_from_offline_client: bool,
+    },
+    SetLibraryOfflineSync {
+        site_url: String,
+        library_id: String,
+        library_title: String,
+        exclude_from_offline_client: bool,
+    },
 }
 
 impl StagingOp {
@@ -259,6 +296,8 @@ impl StagingOp {
             StagingOp::AssignFolderRole { .. } => "ASSIGN_FOLDER_ROLE",
             StagingOp::AssignSiteRole { .. } => "ASSIGN_SITE_ROLE",
             StagingOp::ServerSideCopy { .. } => "COPY_SERVER_SIDE_ITEM",
+            StagingOp::SetSiteOfflineSync { .. } => "SET_SITE_OFFLINE_SYNC",
+            StagingOp::SetLibraryOfflineSync { .. } => "SET_LIBRARY_OFFLINE_SYNC",
         }
     }
 
@@ -271,7 +310,9 @@ impl StagingOp {
             | StagingOp::CreateFolder { site_url, .. }
             | StagingOp::BreakFolderInheritance { site_url, .. }
             | StagingOp::AssignFolderRole { site_url, .. }
-            | StagingOp::AssignSiteRole { site_url, .. } => site_url,
+            | StagingOp::AssignSiteRole { site_url, .. }
+            | StagingOp::SetSiteOfflineSync { site_url, .. }
+            | StagingOp::SetLibraryOfflineSync { site_url, .. } => site_url,
             StagingOp::ServerSideCopy {
                 target_site_url, ..
             } => target_site_url,
@@ -352,6 +393,40 @@ impl StagingOp {
                     kind, source_server_relative_url, target_folder_server_relative_url
                 )
             }
+            StagingOp::SetSiteOfflineSync {
+                site_title,
+                exclude_from_offline_client,
+                ..
+            } => {
+                if *exclude_from_offline_client {
+                    format!(
+                        "[-Sync] Desactivar sincronización offline en el sitio '{}'",
+                        site_title
+                    )
+                } else {
+                    format!(
+                        "[+Sync] Activar sincronización offline en el sitio '{}'",
+                        site_title
+                    )
+                }
+            }
+            StagingOp::SetLibraryOfflineSync {
+                library_title,
+                exclude_from_offline_client,
+                ..
+            } => {
+                if *exclude_from_offline_client {
+                    format!(
+                        "[-Sync] Desactivar sincronización offline en biblioteca '{}'",
+                        library_title
+                    )
+                } else {
+                    format!(
+                        "[+Sync] Activar sincronización offline en biblioteca '{}'",
+                        library_title
+                    )
+                }
+            }
         }
     }
 }
@@ -398,6 +473,15 @@ pub enum ReversePayload {
         site_url: String,
         principal_id: i64,
         role_def_id: i64,
+    },
+    RestoreSiteOfflineSync {
+        site_url: String,
+        previous_exclude_from_offline_client: bool,
+    },
+    RestoreLibraryOfflineSync {
+        site_url: String,
+        library_id: String,
+        previous_exclude_from_offline_client: bool,
     },
     NoOp {
         reason: String,

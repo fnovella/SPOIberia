@@ -4,8 +4,8 @@ use crate::auth::AuthManager;
 use crate::cloner::SiteClonerEngine;
 use crate::db::Database;
 use crate::importer::MatrixImporter;
-use crate::models::{CloneConfig, StagingOp};
-use crate::staging::{StagingQueue, TransactionExecutor};
+use crate::models::{CloneConfig, SiteSyncStatus, StagingOp};
+use crate::staging::{ExecutionReport, StagingQueue, TransactionExecutor};
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -152,6 +152,12 @@ pub enum Commands {
         /// Previsualizar el plan de clonado sin aplicarlo
         #[arg(long = "dry-run")]
         dry_run: bool,
+    },
+
+    /// (Fase 4) Consultar, activar o desactivar la sincronización offline (OneDrive Sync / Accesos directos)
+    Sync {
+        #[command(subcommand)]
+        action: SyncCommand,
     },
 }
 
@@ -390,6 +396,60 @@ pub enum MatrixCommand {
         library: String,
         #[arg(long = "out")]
         out: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SyncCommand {
+    /// Consulta el estado de sincronización offline (`ExcludeFromOfflineClient`) del sitio y sus bibliotecas
+    Status {
+        #[arg(long = "site")]
+        site: String,
+        /// Incluir subsitios de forma recursiva
+        #[arg(long = "include-subsites")]
+        include_subsites: bool,
+    },
+    /// Desactiva la sincronización offline y los accesos directos a OneDrive (`ExcludeFromOfflineClient = true`)
+    Disable {
+        #[arg(long = "site")]
+        site: String,
+        /// Nombre(s) de biblioteca separados por coma (si se omite, aplica al sitio y todas sus bibliotecas)
+        #[arg(long = "library", conflicts_with_all = ["site_only", "libraries_only", "include_subsites"])]
+        library: Option<String>,
+        /// Aplicar únicamente a nivel de sitio (`SP.Web`), sin modificar bibliotecas individuales
+        #[arg(long = "site-only", conflicts_with = "libraries_only")]
+        site_only: bool,
+        /// Aplicar únicamente a las bibliotecas de documentos, sin modificar el sitio (`SP.Web`)
+        #[arg(long = "libraries-only")]
+        libraries_only: bool,
+        /// Incluir subsitios de forma recursiva
+        #[arg(long = "include-subsites")]
+        include_subsites: bool,
+        #[arg(long = "note")]
+        note: Option<String>,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+    /// Reactiva la sincronización offline y los accesos directos a OneDrive (`ExcludeFromOfflineClient = false`)
+    Enable {
+        #[arg(long = "site")]
+        site: String,
+        /// Nombre(s) de biblioteca separados por coma (si se omite, aplica al sitio y todas sus bibliotecas)
+        #[arg(long = "library", conflicts_with_all = ["site_only", "libraries_only", "include_subsites"])]
+        library: Option<String>,
+        /// Aplicar únicamente a nivel de sitio (`SP.Web`), sin modificar bibliotecas individuales
+        #[arg(long = "site-only", conflicts_with = "libraries_only")]
+        site_only: bool,
+        /// Aplicar únicamente a las bibliotecas de documentos, sin modificar el sitio (`SP.Web`)
+        #[arg(long = "libraries-only")]
+        libraries_only: bool,
+        /// Incluir subsitios de forma recursiva
+        #[arg(long = "include-subsites")]
+        include_subsites: bool,
+        #[arg(long = "note")]
+        note: Option<String>,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
 }
 
@@ -710,14 +770,22 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
             LibrariesCommand::List { site } => {
                 let libs = spo.get_document_libraries(site).await?;
                 print_output(&libs, format, || {
-                    println!("{:<28} | {:<8} | {:<10} | RUTA RELATIVA", "TÍTULO", "ITEMS", "DEFAULT");
-                    println!("{}", "-".repeat(90));
+                    println!(
+                        "{:<28} | {:<8} | {:<10} | {:<10} | RUTA RELATIVA",
+                        "TÍTULO", "ITEMS", "DEFAULT", "SYNC"
+                    );
+                    println!("{}", "-".repeat(103));
                     for l in &libs {
                         println!(
-                            "{:<28} | {:<8} | {:<10} | {}",
+                            "{:<28} | {:<8} | {:<10} | {:<10} | {}",
                             truncate(&l.title, 28),
                             l.item_count,
                             if l.is_default_documents { "Sí" } else { "No" },
+                            if l.exclude_from_offline_client {
+                                "Bloqueada"
+                            } else {
+                                "Activa"
+                            },
                             l.server_relative_url
                         );
                     }
@@ -929,9 +997,218 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                 .await?;
             print_execution_report(&report, format)?;
         }
+        Commands::Sync { action } => match action {
+            SyncCommand::Status {
+                site,
+                include_subsites,
+            } => {
+                let status = spo.get_site_sync_status(site, *include_subsites).await?;
+                print_output(&status, format, || {
+                    print_site_sync_status_table(&status, 0);
+                })?;
+            }
+            SyncCommand::Disable {
+                site,
+                library,
+                site_only,
+                libraries_only,
+                include_subsites,
+                note,
+                dry_run,
+            } => {
+                handle_sync_toggle(
+                    &spo,
+                    &executor,
+                    &actor_upn,
+                    site,
+                    library,
+                    *site_only,
+                    *libraries_only,
+                    *include_subsites,
+                    note,
+                    *dry_run,
+                    true,
+                    format,
+                )
+                .await?;
+            }
+            SyncCommand::Enable {
+                site,
+                library,
+                site_only,
+                libraries_only,
+                include_subsites,
+                note,
+                dry_run,
+            } => {
+                handle_sync_toggle(
+                    &spo,
+                    &executor,
+                    &actor_upn,
+                    site,
+                    library,
+                    *site_only,
+                    *libraries_only,
+                    *include_subsites,
+                    note,
+                    *dry_run,
+                    false,
+                    format,
+                )
+                .await?;
+            }
+        },
     }
 
     Ok(())
+}
+
+fn enqueue_sync_from_status(
+    node: &SiteSyncStatus,
+    target_exclude: bool,
+    site_only: bool,
+    libraries_only: bool,
+    q: &mut StagingQueue,
+) {
+    if !libraries_only && node.exclude_from_offline_client != target_exclude {
+        q.push(StagingOp::SetSiteOfflineSync {
+            site_url: node.site_url.clone(),
+            site_title: node.site_title.clone(),
+            exclude_from_offline_client: target_exclude,
+        });
+    }
+    if !site_only {
+        for lib in &node.libraries {
+            if lib.exclude_from_offline_client != target_exclude {
+                q.push(StagingOp::SetLibraryOfflineSync {
+                    site_url: node.site_url.clone(),
+                    library_id: lib.id.clone(),
+                    library_title: lib.title.clone(),
+                    exclude_from_offline_client: target_exclude,
+                });
+            }
+        }
+    }
+    for sub in &node.subsites {
+        enqueue_sync_from_status(sub, target_exclude, site_only, libraries_only, q);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_sync_toggle(
+    spo: &SpoClient,
+    executor: &TransactionExecutor,
+    actor_upn: &str,
+    site: &str,
+    library: &Option<String>,
+    site_only: bool,
+    libraries_only: bool,
+    include_subsites: bool,
+    note: &Option<String>,
+    dry_run: bool,
+    target_exclude: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    let mut q = StagingQueue::new();
+    let mut site_title = site.to_string();
+
+    if let Some(raw_libs) = library {
+        let mut seen_ids = std::collections::HashSet::new();
+        for name in raw_libs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let lib = spo.resolve_library(site, name).await?;
+            if seen_ids.insert(lib.id.to_lowercase())
+                && lib.exclude_from_offline_client != target_exclude
+            {
+                q.push(StagingOp::SetLibraryOfflineSync {
+                    site_url: site.trim_end_matches('/').to_string(),
+                    library_id: lib.id,
+                    library_title: lib.title,
+                    exclude_from_offline_client: target_exclude,
+                });
+            }
+        }
+        if seen_ids.is_empty() {
+            anyhow::bail!("Debes indicar al menos un nombre de biblioteca válido en --library");
+        }
+    } else {
+        let status = spo.get_site_sync_status(site, include_subsites).await?;
+        site_title = status.site_title.clone();
+        enqueue_sync_from_status(&status, target_exclude, site_only, libraries_only, &mut q);
+    }
+
+    if q.is_empty() {
+        let desired = if target_exclude {
+            "desactivada (ExcludeFromOfflineClient=true)"
+        } else {
+            "activada (ExcludeFromOfflineClient=false)"
+        };
+        let report = ExecutionReport {
+            status: "NO_CHANGES".to_string(),
+            dry_run,
+            transaction_id: None,
+            site_url: site.to_string(),
+            summary: format!(
+                "Sin cambios: el objetivo ya tenía la sincronización {}",
+                desired
+            ),
+            operations: Vec::new(),
+        };
+        return print_execution_report(&report, format);
+    }
+
+    let report = executor
+        .apply_queue(
+            &q,
+            actor_upn,
+            site,
+            &site_title,
+            "CLI",
+            note.as_deref(),
+            dry_run,
+        )
+        .await?;
+    print_execution_report(&report, format)
+}
+
+fn print_site_sync_status_table(status: &SiteSyncStatus, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let web_state = if status.exclude_from_offline_client {
+        "BLOQUEADA (ExcludeFromOfflineClient=true)"
+    } else {
+        "ACTIVA    (ExcludeFromOfflineClient=false)"
+    };
+    println!(
+        "{}Sitio: {} ({})",
+        indent, status.site_title, status.site_url
+    );
+    println!("{}  Estado Sitio (SP.Web): {}", indent, web_state);
+    if status.libraries.is_empty() {
+        println!("{}  (Sin bibliotecas de documentos)", indent);
+    } else {
+        println!(
+            "{}  {:<28} | {:<10} | RUTA RELATIVA",
+            indent, "BIBLIOTECA", "SYNC"
+        );
+        println!("{}  {}", indent, "-".repeat(75));
+        for lib in &status.libraries {
+            let lib_state = if lib.exclude_from_offline_client {
+                "Bloqueada"
+            } else {
+                "Activa"
+            };
+            println!(
+                "{}  {:<28} | {:<10} | {}",
+                indent,
+                truncate(&lib.title, 28),
+                lib_state,
+                lib.server_relative_url
+            );
+        }
+    }
+    for sub in &status.subsites {
+        println!();
+        print_site_sync_status_table(sub, depth + 1);
+    }
 }
 
 fn print_execution_report(
@@ -992,5 +1269,103 @@ mod tests {
     #[test]
     fn verify_cli_structure() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn test_sync_cli_parsing() {
+        let status_cli = Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "status",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--include-subsites",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            status_cli.command,
+            Some(Commands::Sync {
+                action: SyncCommand::Status {
+                    include_subsites: true,
+                    ..
+                }
+            })
+        ));
+
+        let disable_cli = Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "disable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            disable_cli.command,
+            Some(Commands::Sync {
+                action: SyncCommand::Disable { dry_run: true, .. }
+            })
+        ));
+
+        let disable_lib_cli = Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "disable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--library",
+            "Documentos",
+        ])
+        .unwrap();
+        match disable_lib_cli.command {
+            Some(Commands::Sync {
+                action: SyncCommand::Disable { library, .. },
+            }) => assert_eq!(library.as_deref(), Some("Documentos")),
+            other => panic!("unexpected parsed command: {:?}", other),
+        }
+
+        let enable_cli = Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "enable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--include-subsites",
+        ])
+        .unwrap();
+        assert!(matches!(
+            enable_cli.command,
+            Some(Commands::Sync {
+                action: SyncCommand::Enable {
+                    include_subsites: true,
+                    ..
+                }
+            })
+        ));
+
+        assert!(Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "disable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--library",
+            "Documentos",
+            "--site-only",
+        ])
+        .is_err());
+
+        assert!(Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "enable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--site-only",
+            "--libraries-only",
+        ])
+        .is_err());
     }
 }
