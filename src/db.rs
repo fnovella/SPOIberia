@@ -387,6 +387,8 @@ mod tests {
 
     #[test]
     fn test_sqlite_offline_sync_reverse_payload_roundtrip() {
+        use crate::models::ViewFormatterBackup;
+
         let db = Database::open_in_memory().expect("in-memory sqlite");
         let site = "https://contoso.sharepoint.com/sites/Obra1";
         let lib_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -410,6 +412,12 @@ mod tests {
             site_url: site.to_string(),
             library_id: lib_id.to_string(),
             previous_exclude_from_offline_client: true,
+            restore_exclude_flag: true,
+            previous_view_formatters: vec![ViewFormatterBackup {
+                view_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                view_title: "Todos los documentos".to_string(),
+                previous_custom_formatter: r#"{"additionalRowClass":"custom"}"#.to_string(),
+            }],
         };
 
         db.record_operation(
@@ -457,12 +465,44 @@ mod tests {
                 site_url,
                 library_id,
                 previous_exclude_from_offline_client,
+                restore_exclude_flag,
+                previous_view_formatters,
             } => {
                 assert_eq!(site_url, site);
                 assert_eq!(library_id, lib_id);
                 assert!(previous_exclude_from_offline_client);
+                assert!(restore_exclude_flag);
+                assert_eq!(previous_view_formatters.len(), 1);
+                assert_eq!(
+                    previous_view_formatters[0].view_title,
+                    "Todos los documentos"
+                );
+                assert_eq!(
+                    previous_view_formatters[0].previous_custom_formatter,
+                    r#"{"additionalRowClass":"custom"}"#
+                );
             }
             other => panic!("unexpected reverse payload: {:?}", other),
+        }
+
+        // Verify legacy v0.8.0 RestoreLibraryOfflineSync JSON still deserializes cleanly with defaults
+        let legacy_json = format!(
+            r#"{{"reverse_type":"RestoreLibraryOfflineSync","site_url":"{}","library_id":"{}","previous_exclude_from_offline_client":false}}"#,
+            site, lib_id
+        );
+        let legacy_parsed: ReversePayload = serde_json::from_str(&legacy_json).unwrap();
+        match legacy_parsed {
+            ReversePayload::RestoreLibraryOfflineSync {
+                restore_exclude_flag,
+                previous_view_formatters,
+                previous_exclude_from_offline_client,
+                ..
+            } => {
+                assert!(!previous_exclude_from_offline_client);
+                assert!(restore_exclude_flag);
+                assert!(previous_view_formatters.is_empty());
+            }
+            other => panic!("unexpected legacy payload: {:?}", other),
         }
     }
 }

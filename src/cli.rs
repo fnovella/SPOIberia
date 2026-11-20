@@ -425,6 +425,9 @@ pub enum SyncCommand {
         /// Incluir subsitios de forma recursiva
         #[arg(long = "include-subsites")]
         include_subsites: bool,
+        /// No modificar el JSON View Formatting (`commandBarProps`) de las vistas de biblioteca
+        #[arg(long = "skip-view-formatting")]
+        skip_view_formatting: bool,
         #[arg(long = "note")]
         note: Option<String>,
         #[arg(long = "dry-run")]
@@ -446,6 +449,9 @@ pub enum SyncCommand {
         /// Incluir subsitios de forma recursiva
         #[arg(long = "include-subsites")]
         include_subsites: bool,
+        /// No restaurar/quitar el JSON View Formatting (`commandBarProps`) de las vistas de biblioteca
+        #[arg(long = "skip-view-formatting")]
+        skip_view_formatting: bool,
         #[arg(long = "note")]
         note: Option<String>,
         #[arg(long = "dry-run")]
@@ -1013,6 +1019,7 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                 site_only,
                 libraries_only,
                 include_subsites,
+                skip_view_formatting,
                 note,
                 dry_run,
             } => {
@@ -1025,6 +1032,7 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                     *site_only,
                     *libraries_only,
                     *include_subsites,
+                    !*skip_view_formatting,
                     note,
                     *dry_run,
                     true,
@@ -1038,6 +1046,7 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                 site_only,
                 libraries_only,
                 include_subsites,
+                skip_view_formatting,
                 note,
                 dry_run,
             } => {
@@ -1050,6 +1059,7 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                     *site_only,
                     *libraries_only,
                     *include_subsites,
+                    !*skip_view_formatting,
                     note,
                     *dry_run,
                     false,
@@ -1068,6 +1078,7 @@ fn enqueue_sync_from_status(
     target_exclude: bool,
     site_only: bool,
     libraries_only: bool,
+    apply_view_formatting: bool,
     q: &mut StagingQueue,
 ) {
     if !libraries_only && node.exclude_from_offline_client != target_exclude {
@@ -1079,18 +1090,33 @@ fn enqueue_sync_from_status(
     }
     if !site_only {
         for lib in &node.libraries {
-            if lib.exclude_from_offline_client != target_exclude {
+            let flag_differs = lib.exclude_from_offline_client != target_exclude;
+            let views_differ = apply_view_formatting
+                && if target_exclude {
+                    lib.views_total > 0 && !lib.shortcut_button_hidden
+                } else {
+                    lib.views_hiding_shortcut > 0
+                };
+            if flag_differs || views_differ {
                 q.push(StagingOp::SetLibraryOfflineSync {
                     site_url: node.site_url.clone(),
                     library_id: lib.id.clone(),
                     library_title: lib.title.clone(),
                     exclude_from_offline_client: target_exclude,
+                    apply_view_formatting,
                 });
             }
         }
     }
     for sub in &node.subsites {
-        enqueue_sync_from_status(sub, target_exclude, site_only, libraries_only, q);
+        enqueue_sync_from_status(
+            sub,
+            target_exclude,
+            site_only,
+            libraries_only,
+            apply_view_formatting,
+            q,
+        );
     }
 }
 
@@ -1104,6 +1130,7 @@ async fn handle_sync_toggle(
     site_only: bool,
     libraries_only: bool,
     include_subsites: bool,
+    apply_view_formatting: bool,
     note: &Option<String>,
     dry_run: bool,
     target_exclude: bool,
@@ -1116,15 +1143,32 @@ async fn handle_sync_toggle(
         let mut seen_ids = std::collections::HashSet::new();
         for name in raw_libs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             let lib = spo.resolve_library(site, name).await?;
-            if seen_ids.insert(lib.id.to_lowercase())
-                && lib.exclude_from_offline_client != target_exclude
-            {
-                q.push(StagingOp::SetLibraryOfflineSync {
-                    site_url: site.trim_end_matches('/').to_string(),
-                    library_id: lib.id,
-                    library_title: lib.title,
-                    exclude_from_offline_client: target_exclude,
-                });
+            if seen_ids.insert(lib.id.to_lowercase()) {
+                let flag_differs = lib.exclude_from_offline_client != target_exclude;
+                let views_differ = if apply_view_formatting {
+                    let views = spo
+                        .get_library_views(site, &lib.id)
+                        .await
+                        .unwrap_or_default();
+                    views.iter().any(|v| {
+                        SpoClient::build_sync_view_formatter(
+                            v.custom_formatter.as_deref(),
+                            target_exclude,
+                        )
+                        .is_some()
+                    })
+                } else {
+                    false
+                };
+                if flag_differs || views_differ {
+                    q.push(StagingOp::SetLibraryOfflineSync {
+                        site_url: site.trim_end_matches('/').to_string(),
+                        library_id: lib.id,
+                        library_title: lib.title,
+                        exclude_from_offline_client: target_exclude,
+                        apply_view_formatting,
+                    });
+                }
             }
         }
         if seen_ids.is_empty() {
@@ -1133,7 +1177,14 @@ async fn handle_sync_toggle(
     } else {
         let status = spo.get_site_sync_status(site, include_subsites).await?;
         site_title = status.site_title.clone();
-        enqueue_sync_from_status(&status, target_exclude, site_only, libraries_only, &mut q);
+        enqueue_sync_from_status(
+            &status,
+            target_exclude,
+            site_only,
+            libraries_only,
+            apply_view_formatting,
+            &mut q,
+        );
     }
 
     if q.is_empty() {
@@ -1186,21 +1237,31 @@ fn print_site_sync_status_table(status: &SiteSyncStatus, depth: usize) {
         println!("{}  (Sin bibliotecas de documentos)", indent);
     } else {
         println!(
-            "{}  {:<28} | {:<10} | RUTA RELATIVA",
-            indent, "BIBLIOTECA", "SYNC"
+            "{}  {:<28} | {:<10} | {:<16} | RUTA RELATIVA",
+            indent, "BIBLIOTECA", "SYNC", "BOTÓN ONEDRIVE"
         );
-        println!("{}  {}", indent, "-".repeat(75));
+        println!("{}  {}", indent, "-".repeat(94));
         for lib in &status.libraries {
             let lib_state = if lib.exclude_from_offline_client {
                 "Bloqueada"
             } else {
                 "Activa"
             };
+            let btn_state = if lib.views_total == 0 {
+                "-".to_string()
+            } else if lib.shortcut_button_hidden {
+                format!("Oculto ({}/{})", lib.views_hiding_shortcut, lib.views_total)
+            } else if lib.views_hiding_shortcut > 0 {
+                format!("Parcial ({}/{})", lib.views_hiding_shortcut, lib.views_total)
+            } else {
+                format!("Visible (0/{})", lib.views_total)
+            };
             println!(
-                "{}  {:<28} | {:<10} | {}",
+                "{}  {:<28} | {:<10} | {:<16} | {}",
                 indent,
                 truncate(&lib.title, 28),
                 lib_state,
+                btn_state,
                 lib.server_relative_url
             );
         }
@@ -1317,12 +1378,21 @@ mod tests {
             "https://contoso.sharepoint.com/sites/Test",
             "--library",
             "Documentos",
+            "--skip-view-formatting",
         ])
         .unwrap();
         match disable_lib_cli.command {
             Some(Commands::Sync {
-                action: SyncCommand::Disable { library, .. },
-            }) => assert_eq!(library.as_deref(), Some("Documentos")),
+                action:
+                    SyncCommand::Disable {
+                        library,
+                        skip_view_formatting,
+                        ..
+                    },
+            }) => {
+                assert_eq!(library.as_deref(), Some("Documentos"));
+                assert!(skip_view_formatting);
+            }
             other => panic!("unexpected parsed command: {:?}", other),
         }
 

@@ -736,26 +736,48 @@ impl TransactionExecutor {
                 library_id,
                 library_title,
                 exclude_from_offline_client,
+                apply_view_formatting,
             } => {
-                let prev = self
+                let prev_exclude = self
                     .spo
                     .get_library_offline_sync(site_url, library_id)
                     .await?;
-                if prev == *exclude_from_offline_client {
+                let mut changed_exclude = false;
+                if prev_exclude != *exclude_from_offline_client {
+                    self.spo
+                        .set_library_offline_sync(
+                            site_url,
+                            library_id,
+                            *exclude_from_offline_client,
+                        )
+                        .await?;
+                    changed_exclude = true;
+                }
+                let mut view_backups = Vec::new();
+                if *apply_view_formatting {
+                    view_backups = self
+                        .spo
+                        .apply_library_sync_view_formatting(
+                            site_url,
+                            library_id,
+                            *exclude_from_offline_client,
+                        )
+                        .await?;
+                }
+                if !changed_exclude && view_backups.is_empty() {
                     return Ok(ReversePayload::NoOp {
                         reason: format!(
-                            "La biblioteca '{}' ya tenía ExcludeFromOfflineClient={}",
-                            library_title, prev
+                            "La biblioteca '{}' ya tenía el estado solicitado (ExcludeFromOfflineClient={} y vistas actualizadas)",
+                            library_title, prev_exclude
                         ),
                     });
                 }
-                self.spo
-                    .set_library_offline_sync(site_url, library_id, *exclude_from_offline_client)
-                    .await?;
                 Ok(ReversePayload::RestoreLibraryOfflineSync {
                     site_url: site_url.clone(),
                     library_id: library_id.clone(),
-                    previous_exclude_from_offline_client: prev,
+                    previous_exclude_from_offline_client: prev_exclude,
+                    restore_exclude_flag: changed_exclude,
+                    previous_view_formatters: view_backups,
                 })
             }
         }
@@ -951,14 +973,29 @@ impl TransactionExecutor {
                 site_url,
                 library_id,
                 previous_exclude_from_offline_client,
+                restore_exclude_flag,
+                previous_view_formatters,
             } => {
-                self.spo
-                    .set_library_offline_sync(
-                        site_url,
-                        library_id,
-                        *previous_exclude_from_offline_client,
-                    )
-                    .await
+                if *restore_exclude_flag {
+                    self.spo
+                        .set_library_offline_sync(
+                            site_url,
+                            library_id,
+                            *previous_exclude_from_offline_client,
+                        )
+                        .await?;
+                }
+                for backup in previous_view_formatters {
+                    self.spo
+                        .set_view_custom_formatter(
+                            site_url,
+                            library_id,
+                            &backup.view_id,
+                            &backup.previous_custom_formatter,
+                        )
+                        .await?;
+                }
+                Ok(())
             }
             ReversePayload::NoOp { .. } => Ok(()),
         }
@@ -1024,6 +1061,7 @@ mod tests {
             library_id: lib_id.to_string(),
             library_title: "Documentos".to_string(),
             exclude_from_offline_client: true,
+            apply_view_formatting: true,
         });
         assert_eq!(q.len(), 2);
         assert_eq!(q.library_sync_staging_state(site, lib_id), Some(true));
@@ -1044,6 +1082,7 @@ mod tests {
             library_id: lib_id.to_string(),
             library_title: "Documentos".to_string(),
             exclude_from_offline_client: false,
+            apply_view_formatting: true,
         });
         assert!(q.is_empty());
         assert_eq!(q.library_sync_staging_state(site, lib_id), None);

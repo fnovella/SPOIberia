@@ -1713,6 +1713,7 @@ mod tests {
             library_id: "lib-2".to_string(),
             library_title: "Archivos".to_string(),
             exclude_from_offline_client: true,
+            apply_view_formatting: true,
         });
 
         terminal.draw(|f| draw_ui(f, &app)).unwrap();

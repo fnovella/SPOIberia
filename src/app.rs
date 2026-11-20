@@ -568,6 +568,7 @@ impl App {
             library_id: lib.id.clone(),
             library_title: lib.title.clone(),
             exclude_from_offline_client: target_exclude,
+            apply_view_formatting: true,
         });
 
         self.status_toast = Some((
@@ -631,6 +632,7 @@ impl App {
                     library_id: lib.id,
                     library_title: lib.title,
                     exclude_from_offline_client: target_exclude,
+                    apply_view_formatting: true,
                 });
             }
         }

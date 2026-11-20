@@ -30,7 +30,8 @@ Aplicación multiplataforma escrita en **Rust** con **arquitectura dual** (**Int
 
 ### Fase 4 — Control de Sincronización Offline (OneDrive Sync / Accesos Directos)
 - Activación y desactivación mediante SharePoint Online REST API de `ExcludeFromOfflineClient` tanto a nivel de **Sitio (`SP.Web`)** como de **Bibliotecas de Documentos (`SP.List`)**, con soporte recursivo de subsitios (`--include-subsites`).
-- Oculta los botones **Sincronizar** y **Agregar acceso directo a OneDrive** e impide nuevas sincronizaciones o accesos directos hacia los OneDrive privativos de los usuarios, manteniendo auditoría transaccional y **Rollback en SQLite** del estado previo exacto.
+- Combina `ExcludeFromOfflineClient` con **JSON View Formatting (`commandBarProps`)** sobre las vistas públicas de cada biblioteca (`CustomFormatter` en `SP.View`) para ocultar o restaurar los botones **"Sincronizar"** y **"Agregar acceso directo a OneDrive"** en ese sitio sin afectar al resto del tenant ni bloquear la descarga de ficheros (`--skip-view-formatting` disponible en CLI).
+- Registra en SQLite el estado previo de cada propiedad y el respaldo exacto del `CustomFormatter` de cada vista para permitir **Rollback LIFO** completo.
 
 ---
 
@@ -117,12 +118,13 @@ spoiberia sync status \
 spoiberia sync disable \
   --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --include-subsites \
-  --note "Bloquear sincronización en OneDrive" \
+  --note "Bloquear sincronización y ocultar acceso directo OneDrive" \
   --dry-run --json
 
 spoiberia sync enable \
   --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --library "Documentos" \
+  --skip-view-formatting \
   --dry-run --json
 ```
 

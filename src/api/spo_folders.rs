@@ -1,6 +1,8 @@
 use crate::api::spo::SpoClient;
 use crate::api::{check_json_response, send_with_retry};
-use crate::models::{FolderPermissionEntry, SpoFolder, SpoLibrary, SpoRoleDefinition};
+use crate::models::{
+    FolderPermissionEntry, SpoFolder, SpoLibrary, SpoRoleDefinition, ViewFormatterBackup,
+};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::json;
@@ -9,8 +11,18 @@ const SPO_JSON_ACCEPT: &str = "application/json;odata=nometadata";
 const SPO_JSON_CONTENT: &str = "application/json;odata=nometadata";
 const SPO_JSON_VERBOSE: &str = "application/json;odata=verbose";
 
+pub const SYNC_COMMAND_BAR_KEYS: &[&str] = &[
+    "addShortcut",
+    "addShortcutToOneDriveCommand",
+    "sync",
+    "syncCommand",
+];
+const VIEW_FORMATTING_SCHEMA: &str =
+    "https://developer.microsoft.com/json-schemas/sp/v2/row-formatting.schema.json";
+
 const SYSTEM_LIBRARY_TITLES: &[&str] = &[
     "Style Library",
+    "Biblioteca de estilos",
     "Site Assets",
     "Activos del sitio",
     "Site Pages",
@@ -18,8 +30,25 @@ const SYSTEM_LIBRARY_TITLES: &[&str] = &[
     "Form Templates",
     "Plantillas de formulario",
     "Preservation Hold Library",
+    "Biblioteca de conservación",
+    "Biblioteca de retención",
     "Site Collection Documents",
+    "Documentos de colección de sitios",
+    "Documentos de la colección de sitios",
     "Site Collection Images",
+    "Imágenes de colección de sitios",
+    "Imágenes de la colección de sitios",
+];
+
+const SYSTEM_LIBRARY_URL_SEGMENTS: &[&str] = &[
+    "Style Library",
+    "SiteAssets",
+    "SitePages",
+    "FormServerTemplates",
+    "PreservationHoldLibrary",
+    "SiteCollectionDocuments",
+    "SiteCollectionImages",
+    "ConvertedForms",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +78,30 @@ struct RawList {
 struct RawOfflineSyncFlag {
     #[serde(rename = "ExcludeFromOfflineClient", default)]
     exclude_from_offline_client: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpoLibraryView {
+    pub id: String,
+    pub title: String,
+    pub default_view: bool,
+    pub custom_formatter: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawListView {
+    #[serde(rename = "Id")]
+    id: String,
+    #[serde(rename = "Title")]
+    title: Option<String>,
+    #[serde(rename = "Hidden", default)]
+    hidden: bool,
+    #[serde(rename = "PersonalView", default)]
+    personal_view: bool,
+    #[serde(rename = "DefaultView", default)]
+    default_view: bool,
+    #[serde(rename = "CustomFormatter")]
+    custom_formatter: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +167,26 @@ struct RawRoleDefName {
 }
 
 impl SpoClient {
+    /// Detect system/template SharePoint libraries across languages via title and language-independent URL segment.
+    pub(crate) fn is_system_library(title: &str, server_relative_url: &str) -> bool {
+        let trimmed_url = server_relative_url.trim_end_matches('/');
+        let lower_url = trimmed_url.to_lowercase();
+        if lower_url.ends_with("/_catalogs") || lower_url.contains("/_catalogs/") {
+            return true;
+        }
+        let clean_title = title.trim();
+        if SYSTEM_LIBRARY_TITLES
+            .iter()
+            .any(|sys| sys.eq_ignore_ascii_case(clean_title))
+        {
+            return true;
+        }
+        let last_segment = trimmed_url.rsplit('/').next().unwrap_or("");
+        SYSTEM_LIBRARY_URL_SEGMENTS
+            .iter()
+            .any(|seg| seg.eq_ignore_ascii_case(last_segment))
+    }
+
     /// List non-system Document Libraries (`BaseTemplate == 101`) in a site.
     pub async fn get_document_libraries(&self, site_url: &str) -> Result<Vec<SpoLibrary>> {
         let base = site_url.trim_end_matches('/');
@@ -137,16 +210,10 @@ impl SpoClient {
         let mut libs: Vec<SpoLibrary> = raw
             .value
             .into_iter()
-            .filter(|l| {
-                l.base_template == 101
-                    && !l.hidden
-                    && !SYSTEM_LIBRARY_TITLES
-                        .iter()
-                        .any(|sys| sys.eq_ignore_ascii_case(&l.title))
-            })
+            .filter(|l| l.base_template == 101 && !l.hidden)
             .filter_map(|l| {
                 let srv_url = l.root_folder?.server_relative_url;
-                if srv_url.ends_with("/_catalogs") || srv_url.contains("/_catalogs/") {
+                if Self::is_system_library(&l.title, &srv_url) {
                     return None;
                 }
                 let is_default = srv_url.ends_with("/Shared Documents")
@@ -335,6 +402,265 @@ impl SpoClient {
             ));
         }
         Ok(())
+    }
+
+    /// Return `true` when a view's `CustomFormatter` JSON hides `"addShortcut"` or `"addShortcutToOneDriveCommand"`.
+    pub fn view_formatter_hides_shortcut(custom_formatter: Option<&str>) -> bool {
+        let Some(raw) = custom_formatter.map(str::trim).filter(|s| !s.is_empty()) else {
+            return false;
+        };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return false;
+        };
+        let Some(commands) = val
+            .get("commandBarProps")
+            .and_then(|p| p.get("commands"))
+            .and_then(|c| c.as_array())
+        else {
+            return false;
+        };
+        commands.iter().any(|cmd| {
+            let hide = cmd.get("hide").and_then(|v| v.as_bool()) == Some(true);
+            let key = cmd.get("key").and_then(|v| v.as_str()).unwrap_or("");
+            hide && (key == "addShortcut" || key == "addShortcutToOneDriveCommand")
+        })
+    }
+
+    /// Compute the updated `CustomFormatter` JSON to hide (`hide_sync_commands=true`) or restore
+    /// (`hide_sync_commands=false`) OneDrive shortcut & sync command bar buttons while preserving
+    /// any existing formatting rules. Returns `None` if no change is needed (or JSON is non-object).
+    pub fn build_sync_view_formatter(
+        existing: Option<&str>,
+        hide_sync_commands: bool,
+    ) -> Option<String> {
+        let trimmed = existing.unwrap_or("").trim();
+
+        if hide_sync_commands {
+            if trimmed.is_empty() {
+                let commands: Vec<serde_json::Value> = SYNC_COMMAND_BAR_KEYS
+                    .iter()
+                    .map(|k| json!({ "key": k, "hide": true }))
+                    .collect();
+                let doc = json!({
+                    "$schema": VIEW_FORMATTING_SCHEMA,
+                    "commandBarProps": {
+                        "commands": commands
+                    }
+                });
+                return serde_json::to_string(&doc).ok();
+            }
+
+            let mut root: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+            let root_obj = root.as_object_mut()?;
+            if !root_obj.contains_key("$schema") {
+                root_obj.insert("$schema".to_string(), json!(VIEW_FORMATTING_SCHEMA));
+            }
+            let bar_obj = root_obj
+                .entry("commandBarProps".to_string())
+                .or_insert_with(|| json!({}))
+                .as_object_mut()?;
+            let cmds_arr = bar_obj
+                .entry("commands".to_string())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()?;
+
+            let mut changed = false;
+            for &target_key in SYNC_COMMAND_BAR_KEYS {
+                if let Some(existing_cmd) = cmds_arr.iter_mut().find(|item| {
+                    item.get("key")
+                        .and_then(|k| k.as_str())
+                        .map(|s| s == target_key)
+                        .unwrap_or(false)
+                }) {
+                    if let Some(cmd_obj) = existing_cmd.as_object_mut() {
+                        if cmd_obj.get("hide").and_then(|v| v.as_bool()) != Some(true) {
+                            cmd_obj.insert("hide".to_string(), json!(true));
+                            changed = true;
+                        }
+                    }
+                } else {
+                    cmds_arr.push(json!({ "key": target_key, "hide": true }));
+                    changed = true;
+                }
+            }
+
+            if !changed {
+                return None;
+            }
+            serde_json::to_string(&root).ok()
+        } else {
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            let mut root: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+            let root_obj = root.as_object_mut()?;
+            let bar_obj = root_obj.get_mut("commandBarProps")?.as_object_mut()?;
+            let cmds_arr = bar_obj.get_mut("commands")?.as_array_mut()?;
+
+            let mut changed = false;
+            let mut new_cmds = Vec::with_capacity(cmds_arr.len());
+            for mut item in std::mem::take(cmds_arr) {
+                let is_sync_key = item
+                    .get("key")
+                    .and_then(|k| k.as_str())
+                    .map(|k| SYNC_COMMAND_BAR_KEYS.contains(&k))
+                    .unwrap_or(false);
+                if is_sync_key {
+                    if let Some(obj) = item.as_object_mut() {
+                        let has_hide_true =
+                            obj.get("hide").and_then(|v| v.as_bool()) == Some(true);
+                        let only_key_and_hide = has_hide_true
+                            && obj.len() <= 2
+                            && obj.keys().all(|k| k == "key" || k == "hide");
+                        if only_key_and_hide {
+                            changed = true;
+                            continue;
+                        } else if obj.remove("hide").is_some() {
+                            changed = true;
+                        }
+                    }
+                }
+                new_cmds.push(item);
+            }
+
+            if !changed {
+                return None;
+            }
+
+            *cmds_arr = new_cmds;
+            if cmds_arr.is_empty() {
+                bar_obj.remove("commands");
+            }
+            if bar_obj.is_empty() {
+                root_obj.remove("commandBarProps");
+            }
+
+            let only_schema_or_empty =
+                root_obj.is_empty() || (root_obj.len() == 1 && root_obj.contains_key("$schema"));
+            if only_schema_or_empty {
+                Some(String::new())
+            } else {
+                serde_json::to_string(&root).ok()
+            }
+        }
+    }
+
+    /// List non-hidden, non-personal views of a Document Library with their `CustomFormatter`.
+    pub async fn get_library_views(
+        &self,
+        site_url: &str,
+        library_id: &str,
+    ) -> Result<Vec<SpoLibraryView>> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let url = format!(
+            "{}/_api/web/lists(guid'{}')/views?$select=Id,Title,Hidden,PersonalView,DefaultView,CustomFormatter",
+            base, library_id
+        );
+
+        let resp = send_with_retry(|| {
+            self.http
+                .get(&url)
+                .bearer_auth(&token)
+                .header("Accept", SPO_JSON_ACCEPT)
+        })
+        .await?;
+
+        let raw: SpoValueList<RawListView> = check_json_response(
+            resp,
+            &format!("Error listando vistas de biblioteca '{}'", library_id),
+        )
+        .await?;
+
+        Ok(raw
+            .value
+            .into_iter()
+            .filter(|v| !v.hidden && !v.personal_view)
+            .filter_map(|v| {
+                let title = v.title.unwrap_or_default();
+                if title.trim().is_empty() {
+                    return None;
+                }
+                Some(SpoLibraryView {
+                    id: v.id,
+                    title,
+                    default_view: v.default_view,
+                    custom_formatter: v.custom_formatter,
+                })
+            })
+            .collect())
+    }
+
+    /// Update a view's `CustomFormatter` property (`POST /_api/web/lists(guid'...')/views(guid'...')` with `MERGE`).
+    pub async fn set_view_custom_formatter(
+        &self,
+        site_url: &str,
+        library_id: &str,
+        view_id: &str,
+        custom_formatter: &str,
+    ) -> Result<()> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let url = format!(
+            "{}/_api/web/lists(guid'{}')/views(guid'{}')",
+            base, library_id, view_id
+        );
+        let payload = serde_json::to_string(&json!({
+            "__metadata": { "type": "SP.View" },
+            "CustomFormatter": custom_formatter
+        }))?;
+
+        let resp = send_with_retry(|| {
+            self.http
+                .post(&url)
+                .bearer_auth(&token)
+                .header("Accept", SPO_JSON_VERBOSE)
+                .header("Content-Type", SPO_JSON_VERBOSE)
+                .header("X-HTTP-Method", "MERGE")
+                .header("If-Match", "*")
+                .body(payload.clone())
+        })
+        .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_txt = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Error actualizando CustomFormatter en vista '{}' de biblioteca '{}' (HTTP {}): {}",
+                view_id,
+                library_id,
+                status,
+                err_txt
+            ));
+        }
+        Ok(())
+    }
+
+    /// Apply or remove JSON View Formatting (`commandBarProps`) on all public views of a Document Library,
+    /// returning a backup of every modified view for deterministic SQLite Rollback.
+    pub async fn apply_library_sync_view_formatting(
+        &self,
+        site_url: &str,
+        library_id: &str,
+        hide_sync_commands: bool,
+    ) -> Result<Vec<ViewFormatterBackup>> {
+        let views = self.get_library_views(site_url, library_id).await?;
+        let mut backups = Vec::new();
+        for v in views {
+            if let Some(new_fmt) =
+                Self::build_sync_view_formatter(v.custom_formatter.as_deref(), hide_sync_commands)
+            {
+                self.set_view_custom_formatter(site_url, library_id, &v.id, &new_fmt)
+                    .await?;
+                backups.push(ViewFormatterBackup {
+                    view_id: v.id,
+                    view_title: v.title,
+                    previous_custom_formatter: v.custom_formatter.unwrap_or_default(),
+                });
+            }
+        }
+        Ok(backups)
     }
 
     /// List folders inside a library (or inside a subfolder relative path) along with their permission status.
@@ -932,5 +1258,92 @@ mod tests {
         assert_eq!(SpoClient::role_name_to_kind("Editar"), Some(4));
         assert_eq!(SpoClient::role_name_to_kind("Full Control"), Some(5));
         assert_eq!(SpoClient::role_name_to_kind("Control total"), Some(5));
+    }
+
+    #[test]
+    fn test_is_system_library_multilingual_and_url_based() {
+        assert!(SpoClient::is_system_library(
+            "Biblioteca de estilos",
+            "/sites/Obra1/Style Library"
+        ));
+        assert!(SpoClient::is_system_library(
+            "Formatbibliothek",
+            "/sites/Obra1/Style Library/"
+        ));
+        assert!(SpoClient::is_system_library(
+            "Recursos del sitio",
+            "/sites/Obra1/SiteAssets"
+        ));
+        assert!(SpoClient::is_system_library(
+            "Biblioteca de conservación",
+            "/sites/Obra1/PreservationHoldLibrary"
+        ));
+        assert!(SpoClient::is_system_library(
+            "Galería de páginas maestras",
+            "/sites/Obra1/_catalogs/masterpage"
+        ));
+
+        assert!(!SpoClient::is_system_library(
+            "Documentos",
+            "/sites/Obra1/Shared Documents"
+        ));
+        assert!(!SpoClient::is_system_library(
+            "Documents",
+            "/sites/Obra1/Shared Documents"
+        ));
+        assert!(!SpoClient::is_system_library(
+            "Planos de Obra",
+            "/sites/Obra1/PlanosDeObra"
+        ));
+    }
+
+    #[test]
+    fn test_build_sync_view_formatter_merge_idempotent_and_restore() {
+        // 1. Fresh hide on empty CustomFormatter
+        let created = SpoClient::build_sync_view_formatter(None, true).expect("created formatter");
+        assert!(SpoClient::view_formatter_hides_shortcut(Some(&created)));
+        for key in SYNC_COMMAND_BAR_KEYS {
+            assert!(created.contains(key), "missing key {key} in {created}");
+        }
+
+        // 2. Idempotent second hide -> None
+        assert_eq!(SpoClient::build_sync_view_formatter(Some(&created), true), None);
+
+        // 3. Hide while preserving existing additionalRowClass and custom commandBarProps command
+        let existing_custom = r#"{"additionalRowClass":"sp-field-severity--good","commandBarProps":{"commands":[{"key":"editInGridView","hide":true}]}}"#;
+        let merged = SpoClient::build_sync_view_formatter(Some(existing_custom), true)
+            .expect("merged formatter");
+        let merged_val: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(
+            merged_val.get("additionalRowClass").and_then(|v| v.as_str()),
+            Some("sp-field-severity--good")
+        );
+        let cmds = merged_val["commandBarProps"]["commands"].as_array().unwrap();
+        assert!(cmds
+            .iter()
+            .any(|c| c["key"] == "editInGridView" && c["hide"] == true));
+        assert!(SpoClient::view_formatter_hides_shortcut(Some(&merged)));
+
+        // 4. Unhide on formatter that only had our 4 keys -> clears to empty string ""
+        let cleared = SpoClient::build_sync_view_formatter(Some(&created), false)
+            .expect("cleared formatter");
+        assert_eq!(cleared, "");
+
+        // 5. Unhide on merged formatter -> strips only our 4 keys and keeps additionalRowClass + editInGridView
+        let restored = SpoClient::build_sync_view_formatter(Some(&merged), false)
+            .expect("restored formatter");
+        assert!(!SpoClient::view_formatter_hides_shortcut(Some(&restored)));
+        let restored_val: serde_json::Value = serde_json::from_str(&restored).unwrap();
+        assert_eq!(
+            restored_val.get("additionalRowClass").and_then(|v| v.as_str()),
+            Some("sp-field-severity--good")
+        );
+        let restored_cmds = restored_val["commandBarProps"]["commands"].as_array().unwrap();
+        assert_eq!(restored_cmds.len(), 1);
+        assert_eq!(restored_cmds[0]["key"], "editInGridView");
+
+        // 6. Unhide on empty formatter -> None
+        assert_eq!(SpoClient::build_sync_view_formatter(None, false), None);
+        assert_eq!(SpoClient::build_sync_view_formatter(Some(""), false), None);
     }
 }

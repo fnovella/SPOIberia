@@ -1094,17 +1094,33 @@ impl SpoClient {
                 self.get_document_libraries(&base)
             )?;
 
-            let libraries = libs
-                .into_iter()
-                .map(|l| LibrarySyncStatus {
+            let base_ref = &base;
+            let libraries = futures::future::join_all(libs.into_iter().map(|l| async move {
+                let views = self
+                    .get_library_views(base_ref, &l.id)
+                    .await
+                    .unwrap_or_default();
+                let views_total = views.len();
+                let views_hiding_shortcut = views
+                    .iter()
+                    .filter(|v| Self::view_formatter_hides_shortcut(v.custom_formatter.as_deref()))
+                    .count();
+                let shortcut_button_hidden =
+                    views_total > 0 && views_hiding_shortcut == views_total;
+
+                LibrarySyncStatus {
                     id: l.id,
                     title: l.title,
                     server_relative_url: l.server_relative_url,
                     is_default_documents: l.is_default_documents,
                     exclude_from_offline_client: l.exclude_from_offline_client,
                     sync_enabled: !l.exclude_from_offline_client,
-                })
-                .collect();
+                    views_total,
+                    views_hiding_shortcut,
+                    shortcut_button_hidden,
+                }
+            }))
+            .await;
 
             let mut subsites = Vec::new();
             if include_subsites {

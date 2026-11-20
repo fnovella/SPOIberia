@@ -172,6 +172,20 @@ pub struct LibrarySyncStatus {
     pub is_default_documents: bool,
     pub exclude_from_offline_client: bool,
     pub sync_enabled: bool,
+    #[serde(default)]
+    pub views_total: usize,
+    #[serde(default)]
+    pub views_hiding_shortcut: usize,
+    #[serde(default)]
+    pub shortcut_button_hidden: bool,
+}
+
+/// Backup of a library view's `CustomFormatter` JSON before applying View Formatting changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ViewFormatterBackup {
+    pub view_id: String,
+    pub view_title: String,
+    pub previous_custom_formatter: String,
 }
 
 /// Folder inside a SharePoint Document Library.
@@ -281,6 +295,8 @@ pub enum StagingOp {
         library_id: String,
         library_title: String,
         exclude_from_offline_client: bool,
+        #[serde(default = "default_true")]
+        apply_view_formatting: bool,
     },
 }
 
@@ -413,20 +429,26 @@ impl StagingOp {
             StagingOp::SetLibraryOfflineSync {
                 library_title,
                 exclude_from_offline_client,
+                apply_view_formatting,
                 ..
-            } => {
-                if *exclude_from_offline_client {
-                    format!(
-                        "[-Sync] Desactivar sincronización offline en biblioteca '{}'",
-                        library_title
-                    )
-                } else {
-                    format!(
-                        "[+Sync] Activar sincronización offline en biblioteca '{}'",
-                        library_title
-                    )
-                }
-            }
+            } => match (*exclude_from_offline_client, *apply_view_formatting) {
+                (true, true) => format!(
+                    "[-Sync] Desactivar sync offline + ocultar acceso directo OneDrive en '{}'",
+                    library_title
+                ),
+                (true, false) => format!(
+                    "[-Sync] Desactivar sincronización offline en biblioteca '{}'",
+                    library_title
+                ),
+                (false, true) => format!(
+                    "[+Sync] Activar sync offline + mostrar acceso directo OneDrive en '{}'",
+                    library_title
+                ),
+                (false, false) => format!(
+                    "[+Sync] Activar sincronización offline en biblioteca '{}'",
+                    library_title
+                ),
+            },
         }
     }
 }
@@ -482,6 +504,10 @@ pub enum ReversePayload {
         site_url: String,
         library_id: String,
         previous_exclude_from_offline_client: bool,
+        #[serde(default = "default_true")]
+        restore_exclude_flag: bool,
+        #[serde(default)]
+        previous_view_formatters: Vec<ViewFormatterBackup>,
     },
     NoOp {
         reason: String,
