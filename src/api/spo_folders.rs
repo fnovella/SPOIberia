@@ -668,9 +668,14 @@ impl SpoClient {
             "{}/_api/web/lists(guid'{}')/views(guid'{}')",
             base, library_id, view_id
         );
+        let cf_value = if custom_formatter.trim().is_empty() {
+            serde_json::Value::Null
+        } else {
+            json!(custom_formatter)
+        };
         let payload = serde_json::to_string(&json!({
             "__metadata": { "type": "SP.View" },
-            "CustomFormatter": custom_formatter
+            "CustomFormatter": cf_value
         }))?;
 
         let resp = send_with_retry(|| {
