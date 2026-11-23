@@ -1082,8 +1082,13 @@ impl SpoClient {
                 .iter()
                 .filter(|v| Self::view_formatter_hides_shortcut(v.custom_formatter.as_deref()))
                 .count();
+            let views_hiding_sync = views
+                .iter()
+                .filter(|v| Self::view_formatter_hides_sync(v.custom_formatter.as_deref()))
+                .count();
             l.views_total = views_total;
             l.views_hiding_shortcut = views_hiding_shortcut;
+            l.views_hiding_sync = views_hiding_sync;
             l.shortcut_button_hidden = views_total > 0 && views_hiding_shortcut == views_total;
             l
         }))
@@ -1132,6 +1137,7 @@ impl SpoClient {
                     sync_enabled: !l.exclude_from_offline_client,
                     views_total: l.views_total,
                     views_hiding_shortcut: l.views_hiding_shortcut,
+                    views_hiding_sync: l.views_hiding_sync,
                     shortcut_button_hidden: l.shortcut_button_hidden,
                 })
                 .collect();

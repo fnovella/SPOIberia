@@ -1868,6 +1868,7 @@ mod tests {
                 exclude_from_offline_client: true,
                 views_total: 1,
                 views_hiding_shortcut: 1,
+                views_hiding_sync: 0,
                 shortcut_button_hidden: true,
             },
             SpoLibrary {
@@ -1879,6 +1880,7 @@ mod tests {
                 exclude_from_offline_client: false,
                 views_total: 1,
                 views_hiding_shortcut: 0,
+                views_hiding_sync: 0,
                 shortcut_button_hidden: false,
             },
         ];

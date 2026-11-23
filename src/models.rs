@@ -154,6 +154,8 @@ pub struct SpoLibrary {
     #[serde(default)]
     pub views_hiding_shortcut: usize,
     #[serde(default)]
+    pub views_hiding_sync: usize,
+    #[serde(default)]
     pub shortcut_button_hidden: bool,
 }
 
@@ -182,6 +184,8 @@ pub struct LibrarySyncStatus {
     pub views_total: usize,
     #[serde(default)]
     pub views_hiding_shortcut: usize,
+    #[serde(default)]
+    pub views_hiding_sync: usize,
     #[serde(default)]
     pub shortcut_button_hidden: bool,
 }

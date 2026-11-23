@@ -16,6 +16,8 @@ pub const SHORTCUT_COMMAND_BAR_KEYS: &[&str] = &[
     "addShortcutToOneDriveCommand",
 ];
 
+pub const SYNC_BUTTON_COMMAND_BAR_KEYS: &[&str] = &["sync", "syncCommand"];
+
 pub const SYNC_COMMAND_BAR_KEYS: &[&str] = &[
     "addShortcut",
     "addShortcutToOneDriveCommand",
@@ -234,6 +236,7 @@ impl SpoClient {
                     exclude_from_offline_client: l.exclude_from_offline_client,
                     views_total: 0,
                     views_hiding_shortcut: 0,
+                    views_hiding_sync: 0,
                     shortcut_button_hidden: false,
                 })
             })
@@ -434,6 +437,28 @@ impl SpoClient {
         })
     }
 
+    /// Return `true` when a view's `CustomFormatter` JSON hides `"sync"` or `"syncCommand"`.
+    pub fn view_formatter_hides_sync(custom_formatter: Option<&str>) -> bool {
+        let Some(raw) = custom_formatter.map(str::trim).filter(|s| !s.is_empty()) else {
+            return false;
+        };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return false;
+        };
+        let Some(commands) = val
+            .get("commandBarProps")
+            .and_then(|p| p.get("commands"))
+            .and_then(|c| c.as_array())
+        else {
+            return false;
+        };
+        commands.iter().any(|cmd| {
+            let hide = cmd.get("hide").and_then(|v| v.as_bool()) == Some(true);
+            let key = cmd.get("key").and_then(|v| v.as_str()).unwrap_or("");
+            hide && (key == "sync" || key == "syncCommand")
+        })
+    }
+
     /// Compute the updated `CustomFormatter` JSON to hide (`hide=true`) or restore
     /// (`hide=false`) specific command bar buttons (`target_keys`) while preserving
     /// any existing formatting rules. Returns `None` if no change is needed (or JSON is non-object).
@@ -565,6 +590,16 @@ impl SpoClient {
         Self::build_command_bar_view_formatter(existing, SHORTCUT_COMMAND_BAR_KEYS, hide_shortcuts)
     }
 
+    /// Compute the updated `CustomFormatter` JSON to hide (`hide_sync=true`) or restore
+    /// (`hide_sync=false`) SharePoint sync command bar buttons (`sync`, `syncCommand`)
+    /// without touching OneDrive shortcut keys.
+    pub fn build_sync_button_view_formatter(
+        existing: Option<&str>,
+        hide_sync: bool,
+    ) -> Option<String> {
+        Self::build_command_bar_view_formatter(existing, SYNC_BUTTON_COMMAND_BAR_KEYS, hide_sync)
+    }
+
     /// Legacy helper: compute the updated `CustomFormatter` JSON to hide or restore all sync & shortcut keys.
     pub fn build_sync_view_formatter(
         existing: Option<&str>,
@@ -677,6 +712,32 @@ impl SpoClient {
         for v in views {
             if let Some(new_fmt) =
                 Self::build_shortcut_view_formatter(v.custom_formatter.as_deref(), hide_shortcuts)
+            {
+                self.set_view_custom_formatter(site_url, library_id, &v.id, &new_fmt)
+                    .await?;
+                backups.push(ViewFormatterBackup {
+                    view_id: v.id,
+                    view_title: v.title,
+                    previous_custom_formatter: v.custom_formatter.unwrap_or_default(),
+                });
+            }
+        }
+        Ok(backups)
+    }
+
+    /// Apply or remove SharePoint sync button JSON View Formatting (`sync`, `syncCommand`) on all
+    /// public views of a Document Library without touching OneDrive shortcut keys.
+    pub async fn apply_library_sync_button_view_formatting(
+        &self,
+        site_url: &str,
+        library_id: &str,
+        hide_sync: bool,
+    ) -> Result<Vec<ViewFormatterBackup>> {
+        let views = self.get_library_views(site_url, library_id).await?;
+        let mut backups = Vec::new();
+        for v in views {
+            if let Some(new_fmt) =
+                Self::build_sync_button_view_formatter(v.custom_formatter.as_deref(), hide_sync)
             {
                 self.set_view_custom_formatter(site_url, library_id, &v.id, &new_fmt)
                     .await?;
@@ -1427,5 +1488,38 @@ mod tests {
         assert!(cmds
             .iter()
             .any(|c| c["key"] == "editInGridView" && c["hide"] == true));
+    }
+
+    #[test]
+    fn test_build_sync_button_view_formatter_only_touches_sync_keys() {
+        let created =
+            SpoClient::build_sync_button_view_formatter(None, true).expect("created sync fmt");
+        assert!(SpoClient::view_formatter_hides_sync(Some(&created)));
+        assert!(!SpoClient::view_formatter_hides_shortcut(Some(&created)));
+        for key in SYNC_BUTTON_COMMAND_BAR_KEYS {
+            assert!(created.contains(key), "missing sync key {key}");
+        }
+        assert!(!created.contains("addShortcut"));
+
+        // Preserve existing addShortcut + addShortcutToOneDriveCommand when hiding/unhiding sync
+        let existing = r#"{"additionalRowClass":"sp-field-severity--good","commandBarProps":{"commands":[{"key":"addShortcut","hide":true},{"key":"addShortcutToOneDriveCommand","hide":true}]}}"#;
+        let merged = SpoClient::build_sync_button_view_formatter(Some(existing), true)
+            .expect("merged sync fmt");
+        assert!(SpoClient::view_formatter_hides_sync(Some(&merged)));
+        assert!(SpoClient::view_formatter_hides_shortcut(Some(&merged)));
+
+        let restored = SpoClient::build_sync_button_view_formatter(Some(&merged), false)
+            .expect("restored sync fmt");
+        assert!(!SpoClient::view_formatter_hides_sync(Some(&restored)));
+        assert!(SpoClient::view_formatter_hides_shortcut(Some(&restored)));
+        let val: serde_json::Value = serde_json::from_str(&restored).unwrap();
+        let cmds = val["commandBarProps"]["commands"].as_array().unwrap();
+        assert_eq!(cmds.len(), 2);
+        assert!(cmds
+            .iter()
+            .any(|c| c["key"] == "addShortcut" && c["hide"] == true));
+        assert!(cmds
+            .iter()
+            .any(|c| c["key"] == "addShortcutToOneDriveCommand" && c["hide"] == true));
     }
 }

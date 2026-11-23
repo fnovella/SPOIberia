@@ -809,17 +809,23 @@ impl TransactionExecutor {
                         .await?;
                     changed_exclude = true;
                 }
-                let mut view_backups = Vec::new();
-                if *apply_view_formatting {
-                    view_backups = self
-                        .spo
+                let view_backups = if *apply_view_formatting {
+                    self.spo
                         .apply_library_sync_view_formatting(
                             site_url,
                             library_id,
                             *exclude_from_offline_client,
                         )
-                        .await?;
-                }
+                        .await?
+                } else {
+                    self.spo
+                        .apply_library_sync_button_view_formatting(
+                            site_url,
+                            library_id,
+                            *exclude_from_offline_client,
+                        )
+                        .await?
+                };
                 if !changed_exclude && view_backups.is_empty() {
                     return Ok(ReversePayload::NoOp {
                         reason: format!(

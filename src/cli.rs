@@ -1307,14 +1307,21 @@ fn enqueue_sync_from_status(
     }
     if !site_only {
         for lib in &node.libraries {
-            if manage_sharepoint && lib.exclude_from_offline_client != target_exclude {
-                q.push(StagingOp::SetLibraryOfflineSync {
-                    site_url: node.site_url.clone(),
-                    library_id: lib.id.clone(),
-                    library_title: lib.title.clone(),
-                    exclude_from_offline_client: target_exclude,
-                    apply_view_formatting: false,
-                });
+            if manage_sharepoint {
+                let sync_views_differ = if target_exclude {
+                    lib.views_total > 0 && lib.views_hiding_sync < lib.views_total
+                } else {
+                    lib.views_hiding_sync > 0
+                };
+                if lib.exclude_from_offline_client != target_exclude || sync_views_differ {
+                    q.push(StagingOp::SetLibraryOfflineSync {
+                        site_url: node.site_url.clone(),
+                        library_id: lib.id.clone(),
+                        library_title: lib.title.clone(),
+                        exclude_from_offline_client: target_exclude,
+                        apply_view_formatting: false,
+                    });
+                }
             }
             if manage_onedrive {
                 let views_differ = if target_exclude {
@@ -1379,20 +1386,29 @@ async fn handle_sync_toggle(
             let lib = spo.resolve_library(site, name).await?;
             if seen_ids.insert(lib.id.to_lowercase()) {
                 let clean_site = site.trim_end_matches('/').to_string();
-                if manage_sharepoint && lib.exclude_from_offline_client != target_exclude {
-                    q.push(StagingOp::SetLibraryOfflineSync {
-                        site_url: clean_site.clone(),
-                        library_id: lib.id.clone(),
-                        library_title: lib.title.clone(),
-                        exclude_from_offline_client: target_exclude,
-                        apply_view_formatting: false,
+                let views = spo
+                    .get_library_views(site, &lib.id)
+                    .await
+                    .unwrap_or_default();
+                if manage_sharepoint {
+                    let sync_views_differ = views.iter().any(|v| {
+                        SpoClient::build_sync_button_view_formatter(
+                            v.custom_formatter.as_deref(),
+                            target_exclude,
+                        )
+                        .is_some()
                     });
+                    if lib.exclude_from_offline_client != target_exclude || sync_views_differ {
+                        q.push(StagingOp::SetLibraryOfflineSync {
+                            site_url: clean_site.clone(),
+                            library_id: lib.id.clone(),
+                            library_title: lib.title.clone(),
+                            exclude_from_offline_client: target_exclude,
+                            apply_view_formatting: false,
+                        });
+                    }
                 }
                 if manage_onedrive {
-                    let views = spo
-                        .get_library_views(site, &lib.id)
-                        .await
-                        .unwrap_or_default();
                     let views_differ = views.iter().any(|v| {
                         SpoClient::build_shortcut_view_formatter(
                             v.custom_formatter.as_deref(),
