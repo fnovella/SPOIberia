@@ -163,6 +163,36 @@ impl StagingQueue {
                     }
                 }
             }
+            StagingOp::SetLibraryOneDriveShortcuts {
+                site_url,
+                library_id,
+                hide_shortcut_button,
+                ..
+            } => {
+                let target_site = site_url.trim_end_matches('/');
+                if let Some(pos) = self.ops.iter().position(|existing| {
+                    matches!(
+                        existing,
+                        StagingOp::SetLibraryOneDriveShortcuts {
+                            site_url: s,
+                            library_id: id,
+                            ..
+                        } if s.trim_end_matches('/').eq_ignore_ascii_case(target_site)
+                            && id.eq_ignore_ascii_case(library_id)
+                    )
+                }) {
+                    if let StagingOp::SetLibraryOneDriveShortcuts {
+                        hide_shortcut_button: prev_hide,
+                        ..
+                    } = &self.ops[pos]
+                    {
+                        if *prev_hide != *hide_shortcut_button {
+                            self.ops.remove(pos);
+                        }
+                        return;
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -204,6 +234,27 @@ impl StagingQueue {
                     && id.eq_ignore_ascii_case(library_id)
                 {
                     return Some(*exclude_from_offline_client);
+                }
+            }
+        }
+        None
+    }
+
+    /// Return the staged `hide_shortcut_button` target for a library, if a OneDrive shortcut change is pending.
+    pub fn library_shortcut_staging_state(&self, site_url: &str, library_id: &str) -> Option<bool> {
+        let target_site = site_url.trim_end_matches('/');
+        for op in &self.ops {
+            if let StagingOp::SetLibraryOneDriveShortcuts {
+                site_url: s,
+                library_id: id,
+                hide_shortcut_button,
+                ..
+            } = op
+            {
+                if s.trim_end_matches('/').eq_ignore_ascii_case(target_site)
+                    && id.eq_ignore_ascii_case(library_id)
+                {
+                    return Some(*hide_shortcut_button);
                 }
             }
         }
@@ -301,6 +352,7 @@ impl StagingQueue {
         let mut perms = 0usize;
         let mut copies = 0usize;
         let mut sync_changes = 0usize;
+        let mut shortcut_changes = 0usize;
 
         for op in &self.ops {
             match op {
@@ -315,6 +367,7 @@ impl StagingQueue {
                 StagingOp::SetSiteOfflineSync { .. } | StagingOp::SetLibraryOfflineSync { .. } => {
                     sync_changes += 1
                 }
+                StagingOp::SetLibraryOneDriveShortcuts { .. } => shortcut_changes += 1,
             }
         }
 
@@ -338,7 +391,10 @@ impl StagingQueue {
             parts.push(format!("{} copia(s) server-side", copies));
         }
         if sync_changes > 0 {
-            parts.push(format!("{} cambio(s) sync offline", sync_changes));
+            parts.push(format!("{} cambio(s) sync SharePoint", sync_changes));
+        }
+        if shortcut_changes > 0 {
+            parts.push(format!("{} cambio(s) accesos OneDrive", shortcut_changes));
         }
         parts.join(", ")
     }
@@ -780,6 +836,34 @@ impl TransactionExecutor {
                     previous_view_formatters: view_backups,
                 })
             }
+            StagingOp::SetLibraryOneDriveShortcuts {
+                site_url,
+                library_id,
+                library_title,
+                hide_shortcut_button,
+            } => {
+                let view_backups = self
+                    .spo
+                    .apply_library_shortcut_view_formatting(
+                        site_url,
+                        library_id,
+                        *hide_shortcut_button,
+                    )
+                    .await?;
+                if view_backups.is_empty() {
+                    return Ok(ReversePayload::NoOp {
+                        reason: format!(
+                            "La biblioteca '{}' ya tenía los accesos directos a OneDrive en el estado solicitado (ocultos={})",
+                            library_title, hide_shortcut_button
+                        ),
+                    });
+                }
+                Ok(ReversePayload::RestoreLibraryOneDriveShortcuts {
+                    site_url: site_url.clone(),
+                    library_id: library_id.clone(),
+                    previous_view_formatters: view_backups,
+                })
+            }
         }
     }
 
@@ -997,6 +1081,23 @@ impl TransactionExecutor {
                 }
                 Ok(())
             }
+            ReversePayload::RestoreLibraryOneDriveShortcuts {
+                site_url,
+                library_id,
+                previous_view_formatters,
+            } => {
+                for backup in previous_view_formatters {
+                    self.spo
+                        .set_view_custom_formatter(
+                            site_url,
+                            library_id,
+                            &backup.view_id,
+                            &backup.previous_custom_formatter,
+                        )
+                        .await?;
+                }
+                Ok(())
+            }
             ReversePayload::NoOp { .. } => Ok(()),
         }
     }
@@ -1061,11 +1162,23 @@ mod tests {
             library_id: lib_id.to_string(),
             library_title: "Documentos".to_string(),
             exclude_from_offline_client: true,
-            apply_view_formatting: true,
+            apply_view_formatting: false,
         });
         assert_eq!(q.len(), 2);
         assert_eq!(q.library_sync_staging_state(site, lib_id), Some(true));
-        assert!(q.build_summary().contains("2 cambio(s) sync offline"));
+        assert_eq!(q.library_shortcut_staging_state(site, lib_id), None);
+        assert!(q.build_summary().contains("2 cambio(s) sync SharePoint"));
+
+        // OneDrive shortcut op on the same library is tracked independently
+        q.push(StagingOp::SetLibraryOneDriveShortcuts {
+            site_url: site.to_string(),
+            library_id: lib_id.to_string(),
+            library_title: "Documentos".to_string(),
+            hide_shortcut_button: true,
+        });
+        assert_eq!(q.len(), 3);
+        assert_eq!(q.library_shortcut_staging_state(site, lib_id), Some(true));
+        assert!(q.build_summary().contains("1 cambio(s) accesos OneDrive"));
 
         // Opposite site toggle neutralizes the pending site op
         q.push(StagingOp::SetSiteOfflineSync {
@@ -1073,18 +1186,29 @@ mod tests {
             site_title: "Test".to_string(),
             exclude_from_offline_client: false,
         });
-        assert_eq!(q.len(), 1);
+        assert_eq!(q.len(), 2);
         assert_eq!(q.site_sync_staging_state(site), None);
 
-        // Opposite library toggle neutralizes the pending library op
+        // Opposite library sync toggle neutralizes only the sync op, leaving the shortcut op
         q.push(StagingOp::SetLibraryOfflineSync {
             site_url: site.to_string(),
             library_id: lib_id.to_string(),
             library_title: "Documentos".to_string(),
             exclude_from_offline_client: false,
-            apply_view_formatting: true,
+            apply_view_formatting: false,
+        });
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.library_sync_staging_state(site, lib_id), None);
+        assert_eq!(q.library_shortcut_staging_state(site, lib_id), Some(true));
+
+        // Opposite shortcut toggle neutralizes the shortcut op
+        q.push(StagingOp::SetLibraryOneDriveShortcuts {
+            site_url: site.to_string(),
+            library_id: lib_id.to_string(),
+            library_title: "Documentos".to_string(),
+            hide_shortcut_button: false,
         });
         assert!(q.is_empty());
-        assert_eq!(q.library_sync_staging_state(site, lib_id), None);
+        assert_eq!(q.library_shortcut_staging_state(site, lib_id), None);
     }
 }

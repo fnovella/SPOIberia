@@ -1,5 +1,5 @@
 use crate::app::{
-    App, Modal, PaneFocus, Screen, WorkspaceTab, STANDARD_ROLES,
+    App, Modal, PaneFocus, Screen, SyncMenuScope, WorkspaceTab, STANDARD_ROLES,
 };
 use crate::models::{GroupKind, SiteRole};
 use ratatui::{
@@ -731,6 +731,27 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
                     }
                     None => ("[Sync] ", Style::default().fg(Color::Cyan).bg(bg)),
                 };
+            let (od_tag, od_style) =
+                match app.staging.library_shortcut_staging_state(site_url, &l.id) {
+                    Some(true) => (
+                        "[-OD*] ",
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .bg(bg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Some(false) => (
+                        "[+OD*] ",
+                        Style::default()
+                            .fg(Color::LightGreen)
+                            .bg(bg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    None if l.shortcut_button_hidden => {
+                        ("[NoOD] ", Style::default().fg(Color::LightRed).bg(bg))
+                    }
+                    None => ("[OD] ", Style::default().fg(Color::Cyan).bg(bg)),
+                };
             let def_tag = if l.is_default_documents {
                 "[Default] "
             } else {
@@ -738,6 +759,7 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
             };
             ListItem::new(Line::from(vec![
                 Span::styled(sync_tag, sync_style),
+                Span::styled(od_tag, od_style),
                 Span::styled(def_tag, Style::default().fg(Color::LightGreen).bg(bg)),
                 Span::styled(
                     format!("{} ({} ítems)", l.title, l.item_count),
@@ -751,7 +773,7 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let lib_block = Block::default()
-        .title(" Bibliotecas [b: Nueva | o: Sync] ")
+        .title(" Bibliotecas [b: Nueva | o: Sync/OneDrive] ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if left_focused {
@@ -981,9 +1003,13 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
                 let fg = if label.starts_with("[+]")
                     || label.starts_with("[+Rol]")
                     || label.starts_with("[+Sync]")
+                    || label.starts_with("[+AtajoOD]")
                 {
                     Color::LightGreen
-                } else if label.starts_with("[-]") || label.starts_with("[-Sync]") {
+                } else if label.starts_with("[-]")
+                    || label.starts_with("[-Sync]")
+                    || label.starts_with("[-AtajoOD]")
+                {
                     Color::LightRed
                 } else {
                     Color::Yellow
@@ -1188,10 +1214,10 @@ fn context_help_keys(app: &App) -> &'static str {
         }
         Screen::SiteWorkspace => match app.tab {
             WorkspaceTab::GroupsAndUsers => {
-                "Tab/←/→: Cambiar Panel | a: Asignar Usuario | d: Remover Usuario | g: Crear Grupo | O: Sync Sitio | A: APLICAR Staging | H: Historial/Rollback | Esc: Sitios"
+                "Tab/←/→: Cambiar Panel | a: Asignar Usuario | d: Remover Usuario | g: Crear Grupo | O: Menú Sync/OneDrive Sitio | A: APLICAR Staging | H: Historial/Rollback | Esc: Sitios"
             }
             WorkspaceTab::LibrariesAndFolders => {
-                "Tab/←/→: Panel | o: Sync Bib | O: Sync Sitio+Bibs | n: Carpeta | b: Bib | p: Permiso | i/e: CSV/JSON | A: APLICAR"
+                "Tab/←/→: Panel | o: Menú Sync/OneDrive Bib | O: Menú Sitio+Bibs | n: Carpeta | b: Bib | p: Permiso | i/e: CSV/JSON | A: APLICAR"
             }
             WorkspaceTab::CloneSite => {
                 "↑/↓: Mover Opción | Espacio: Activar/Desactivar | s: Cambiar URL Origen | Enter: Generar Plan en Staging | A: APLICAR | Esc: Sitios"
@@ -1229,7 +1255,7 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 Line::from(""),
                 Line::from("• Módulo 2 — Bibliotecas, Carpetas y Sync Offline (Pestaña 2):"),
                 Line::from("  n / b       Crear nueva carpeta (n) o nueva biblioteca (b)"),
-                Line::from("  o / O       Alternar sync offline/OneDrive en biblioteca (o) o sitio+bibliotecas (O)"),
+                Line::from("  o / O       Abrir menú Sync SharePoint / Accesos OneDrive en biblioteca (o) o sitio+bibs (O)"),
                 Line::from("  p           Romper herencia y asignar rol (Read/Contribute/Edit/Full Control) a un grupo"),
                 Line::from("  i / e       Importar matriz de carpetas/permisos CSV/JSON (i) o exportar (e)"),
                 Line::from(""),
@@ -1529,6 +1555,169 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 .border_style(Style::default().fg(Color::LightRed));
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
+        Modal::SyncControlMenu {
+            scope,
+            selected_idx,
+        } => {
+            let area = centered_rect(78, 58, f.area());
+            f.render_widget(Clear, area);
+
+            let site_url = app
+                .current_site
+                .as_ref()
+                .map(|s| s.url.as_str())
+                .unwrap_or("");
+
+            let (title, scope_desc, sync_state, od_state, combined_state) = match scope {
+                SyncMenuScope::SelectedLibrary => {
+                    let lib = app.selected_library();
+                    let lib_name = lib.map(|l| l.title.as_str()).unwrap_or("-");
+                    let sync_eff = lib
+                        .map(|l| app.effective_library_sync_excluded(l))
+                        .unwrap_or(false);
+                    let od_eff = lib
+                        .map(|l| app.effective_library_shortcuts_hidden(l))
+                        .unwrap_or(false);
+                    let sync_staged = lib
+                        .and_then(|l| app.staging.library_sync_staging_state(site_url, &l.id))
+                        .is_some();
+                    let od_staged = lib
+                        .and_then(|l| app.staging.library_shortcut_staging_state(site_url, &l.id))
+                        .is_some();
+                    let sync_star = if sync_staged { "*" } else { "" };
+                    let od_star = if od_staged { "*" } else { "" };
+
+                    let sync_txt = format!(
+                        "{}{} -> {}",
+                        if sync_eff { "Bloqueada" } else { "Activa" },
+                        sync_star,
+                        if sync_eff { "Permitir" } else { "Bloquear" }
+                    );
+                    let od_txt = format!(
+                        "{}{} -> {}",
+                        if od_eff { "Oculto" } else { "Visible" },
+                        od_star,
+                        if od_eff { "Mostrar" } else { "Ocultar" }
+                    );
+                    let both_blocked = sync_eff && od_eff;
+                    let comb_txt = if both_blocked {
+                        "Permitir ambos".to_string()
+                    } else {
+                        "Bloquear ambos".to_string()
+                    };
+                    (
+                        format!(" Control Sync / Accesos OneDrive — Biblioteca '{}' ", lib_name),
+                        format!("Ámbito: Biblioteca '{}'", lib_name),
+                        sync_txt,
+                        od_txt,
+                        comb_txt,
+                    )
+                }
+                SyncMenuScope::SiteAndLibraries => {
+                    let site_name = app
+                        .current_site
+                        .as_ref()
+                        .map(|s| s.title.as_str())
+                        .unwrap_or("-");
+                    let sync_eff = app.effective_all_libraries_sync_excluded();
+                    let od_eff = app.effective_all_libraries_shortcuts_hidden();
+                    let sync_staged = app.staging.site_sync_staging_state(site_url).is_some()
+                        || app
+                            .libraries
+                            .iter()
+                            .any(|l| app.staging.library_sync_staging_state(site_url, &l.id).is_some());
+                    let od_staged = app.libraries.iter().any(|l| {
+                        app.staging
+                            .library_shortcut_staging_state(site_url, &l.id)
+                            .is_some()
+                    });
+                    let sync_star = if sync_staged { "*" } else { "" };
+                    let od_star = if od_staged { "*" } else { "" };
+
+                    let sync_txt = format!(
+                        "{}{} -> {}",
+                        if sync_eff { "Bloqueada" } else { "Activa" },
+                        sync_star,
+                        if sync_eff { "Permitir" } else { "Bloquear" }
+                    );
+                    let od_txt = format!(
+                        "{}{} -> {}",
+                        if od_eff { "Ocultos" } else { "Visibles" },
+                        od_star,
+                        if od_eff { "Mostrar" } else { "Ocultar" }
+                    );
+                    let both_blocked = sync_eff
+                        && (app.libraries.is_empty() || od_eff);
+                    let comb_txt = if both_blocked {
+                        "Permitir ambos".to_string()
+                    } else {
+                        "Bloquear ambos".to_string()
+                    };
+                    (
+                        format!(" Control Sync / Accesos OneDrive — Sitio '{}' ", site_name),
+                        format!(
+                            "Ámbito: Sitio '{}' y sus {} biblioteca(s)",
+                            site_name,
+                            app.libraries.len()
+                        ),
+                        sync_txt,
+                        od_txt,
+                        comb_txt,
+                    )
+                }
+            };
+
+            let options = [
+                format!(
+                    "  [1] Sincronización SharePoint (ExcludeFromOfflineClient)   [{}]",
+                    sync_state
+                ),
+                format!(
+                    "  [2] Accesos directos a OneDrive (Botón barra de comandos)  [{}]",
+                    od_state
+                ),
+                format!(
+                    "  [3] Ambos (Sincronización SharePoint + Accesos OneDrive)   [{}]",
+                    combined_state
+                ),
+            ];
+
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  {}", scope_desc),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                )),
+                Line::from("  Selecciona qué subopción quieres alternar en Staging:"),
+                Line::from(""),
+            ];
+
+            for (idx, text) in options.iter().enumerate() {
+                let style = if idx == *selected_idx {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                lines.push(Line::from(Span::styled(text.clone(), style)));
+            }
+
+            lines.push(Line::from(""));
+
+            lines.push(Line::from(Span::styled(
+                "  [↑/↓] Mover | [Enter / 1 / 2 / 3] Encolar en Staging | [Esc] Cancelar",
+                Style::default().fg(Color::Gray),
+            )));
+
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan));
+            f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
+        }
     }
 }
 
@@ -1677,6 +1866,9 @@ mod tests {
                 item_count: 42,
                 is_default_documents: true,
                 exclude_from_offline_client: true,
+                views_total: 1,
+                views_hiding_shortcut: 1,
+                shortcut_button_hidden: true,
             },
             SpoLibrary {
                 id: "lib-2".to_string(),
@@ -1685,6 +1877,9 @@ mod tests {
                 item_count: 5,
                 is_default_documents: false,
                 exclude_from_offline_client: false,
+                views_total: 1,
+                views_hiding_shortcut: 0,
+                shortcut_button_hidden: false,
             },
         ];
 
@@ -1702,18 +1897,32 @@ mod tests {
             "expected library [NoSync] tag in:\n{rendered}"
         );
         assert!(
+            rendered.contains("[NoOD]"),
+            "expected library [NoOD] tag in:\n{rendered}"
+        );
+        assert!(
             rendered.contains("[Sync]"),
             "expected library [Sync] tag in:\n{rendered}"
         );
+        assert!(
+            rendered.contains("[OD]"),
+            "expected library [OD] tag in:\n{rendered}"
+        );
 
-        // Now verify active site badge and staged library disable badge
+        // Now verify active site badge, staged library sync disable, and staged OneDrive shortcut hide
         app.site_exclude_from_offline_client = Some(false);
         app.staging.push(StagingOp::SetLibraryOfflineSync {
-            site_url,
+            site_url: site_url.clone(),
             library_id: "lib-2".to_string(),
             library_title: "Archivos".to_string(),
             exclude_from_offline_client: true,
-            apply_view_formatting: true,
+            apply_view_formatting: false,
+        });
+        app.staging.push(StagingOp::SetLibraryOneDriveShortcuts {
+            site_url,
+            library_id: "lib-2".to_string(),
+            library_title: "Archivos".to_string(),
+            hide_shortcut_button: true,
         });
 
         terminal.draw(|f| draw_ui(f, &app)).unwrap();
@@ -1725,6 +1934,27 @@ mod tests {
         assert!(
             rendered_staged.contains("[-Sync*]"),
             "expected staged library [-Sync*] tag in:\n{rendered_staged}"
+        );
+        assert!(
+            rendered_staged.contains("[-OD*]"),
+            "expected staged library [-OD*] tag in:\n{rendered_staged}"
+        );
+
+        // Verify SyncControlMenu modal renders both suboptions
+        app.open_sync_menu(SyncMenuScope::SelectedLibrary);
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let rendered_modal = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered_modal.contains("[1] Sincronización SharePoint"),
+            "expected SharePoint sync option in modal:\n{rendered_modal}"
+        );
+        assert!(
+            rendered_modal.contains("[2] Accesos directos a OneDrive"),
+            "expected OneDrive shortcuts option in modal:\n{rendered_modal}"
+        );
+        assert!(
+            rendered_modal.contains("[3] Ambos"),
+            "expected combined option in modal:\n{rendered_modal}"
         );
     }
 }

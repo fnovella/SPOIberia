@@ -28,9 +28,10 @@ Aplicación multiplataforma escrita en **Rust** con **arquitectura dual** (**Int
   2. Creación de bibliotecas de documentos faltantes y **copia Server-Side (`SP.MoveCopyUtil`)** de todas las carpetas y archivos conservando su historial de versiones sin descargar datos por la máquina local.
   3. Replicación *top-down* de los **permisos únicos (herencia rota)** a nivel de carpeta hacia los grupos y usuarios equivalentes del destino.
 
-### Fase 4 — Control de Sincronización Offline (OneDrive Sync / Accesos Directos)
-- Activación y desactivación mediante SharePoint Online REST API de `ExcludeFromOfflineClient` tanto a nivel de **Sitio (`SP.Web`)** como de **Bibliotecas de Documentos (`SP.List`)**, con soporte recursivo de subsitios (`--include-subsites`).
-- Combina `ExcludeFromOfflineClient` con **JSON View Formatting (`commandBarProps`)** sobre las vistas públicas de cada biblioteca (`CustomFormatter` en `SP.View`) para ocultar o restaurar los botones **"Sincronizar"** y **"Agregar acceso directo a OneDrive"** en ese sitio sin afectar al resto del tenant ni bloquear la descarga de ficheros (`--skip-view-formatting` disponible en CLI).
+### Fase 4 — Control de Sincronización SharePoint y Accesos Directos a OneDrive
+- Gestión separada (como dos subopciones dentro de la misma lógica en menús TUI y CLI):
+  1. **Sincronización SharePoint (`sharepoint`)**: activación/desactivación mediante SharePoint Online REST API de `ExcludeFromOfflineClient` tanto a nivel de **Sitio (`SP.Web`)** como de **Bibliotecas de Documentos (`SP.List`)**, con soporte recursivo de subsitios (`--include-subsites`).
+  2. **Accesos directos a OneDrive (`onedrive`)**: ocultación/restauración mediante **JSON View Formatting (`commandBarProps`)** sobre las vistas públicas de cada biblioteca (`CustomFormatter` en `SP.View`) únicamente de las claves de acceso directo (`addShortcut`, `addShortcutToOneDriveCommand`) en ese sitio, sin afectar al resto del tenant ni bloquear la descarga de ficheros.
 - Registra en SQLite el estado previo de cada propiedad y el respaldo exacto del `CustomFormatter` de cada vista para permitir **Rollback LIFO** completo.
 
 ---
@@ -44,10 +45,10 @@ spoiberia
 ```
 
 ### Atajos de Teclado Principales en la TUI
-- **Global**: `q` (Salir), `?` (Ayuda), `A` (**Aplicar cambios en Staging**), `1`/`2`/`3`/`4` (Cambiar entre pestañas del sitio), `O` (Activar/Desactivar sync offline en el sitio y todas sus bibliotecas).
+- **Global**: `q` (Salir), `?` (Ayuda), `A` (**Aplicar cambios en Staging**), `1`/`2`/`3`/`4` (Cambiar entre pestañas del sitio), `O` (Menú Sync SharePoint / Accesos OneDrive en el sitio y sus bibliotecas).
 - **Selector de Sitios**: `↑`/`↓` (Navegar), `Enter` (Abrir sitio), `/` (Filtrar local), `s` (Buscar en el tenant), `u` (Abrir URL manual), `c` (Fijar como sitio Origen para Clonado).
 - **Pestaña 1 (Grupos y Usuarios)**: `Tab`/`←`/`→` (Cambiar panel), `a` (Buscar usuario en directorio M365 y asignar), `d` (Remover usuario), `g` (Crear grupo).
-- **Pestaña 2 (Bibliotecas y Carpetas)**: `o` (Activar/Desactivar sync offline en biblioteca seleccionada), `O` (En sitio y todas sus bibliotecas), `n` (Nueva carpeta), `b` (Nueva biblioteca), `p` (Asignar permiso único a carpeta), `i` (Importar matriz CSV/JSON), `e` (Exportar matriz CSV/JSON).
+- **Pestaña 2 (Bibliotecas y Carpetas)**: `o` (Menú Sync SharePoint / Accesos OneDrive en biblioteca seleccionada), `O` (Menú en sitio y todas sus bibliotecas), `n` (Nueva carpeta), `b` (Nueva biblioteca), `p` (Asignar permiso único a carpeta), `i` (Importar matriz CSV/JSON), `e` (Exportar matriz CSV/JSON).
 - **Pestaña 3 (Clonar Sitio)**: `Espacio` (Marcar/desmarcar opciones), `s` (URL Sitio Origen), `Enter` (Generar plan de clonado en Staging).
 - **Pestaña 4 (Staging e Historial SQLite)**: `A` (Aplicar cola Staging), `R` (**Revertir transacción completa**), `r` (**Revertir operación individual**), `d` (Descartar ítem de Staging), `X` (Vaciar Staging).
 
@@ -110,21 +111,36 @@ spoiberia clone \
   --target-site "https://contoso.sharepoint.com/sites/NuevaObra" \
   --dry-run --json
 
-# 8. Fase 4: Control de Sincronización Offline (OneDrive Sync / Accesos Directos)
+# 8. Fase 4: Control de Sincronización SharePoint y Accesos Directos a OneDrive
 spoiberia sync status \
   --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --include-subsites --json
 
-spoiberia sync disable \
+# 8a. Subopción: Solo sincronización offline de SharePoint (`ExcludeFromOfflineClient`)
+spoiberia sync sharepoint disable \
   --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --include-subsites \
-  --note "Bloquear sincronización y ocultar acceso directo OneDrive" \
+  --note "Bloquear sincronización SharePoint" \
+  --dry-run --json
+
+# 8b. Subopción: Solo botón "Agregar acceso directo a OneDrive" (`CustomFormatter`)
+spoiberia sync onedrive disable \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
+  --library "Documentos" \
+  --note "Ocultar acceso directo a OneDrive" \
+  --dry-run --json
+
+# 8c. Ambos o mediante `--target sharepoint|onedrive|all`
+spoiberia sync disable \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
+  --target all \
+  --include-subsites \
   --dry-run --json
 
 spoiberia sync enable \
   --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --library "Documentos" \
-  --skip-view-formatting \
+  --target sharepoint \
   --dry-run --json
 ```
 

@@ -12,7 +12,7 @@ pub mod ui;
 use crate::api::graph::GraphClient;
 use crate::api::spo::SpoClient;
 use crate::app::{
-    App, Modal, PaneFocus, Screen, TextInputKind, WorkspaceTab, STANDARD_ROLES,
+    App, Modal, PaneFocus, Screen, SyncMenuScope, TextInputKind, WorkspaceTab, STANDARD_ROLES,
 };
 use crate::auth::AuthManager;
 use crate::cli::{Cli, Commands};
@@ -280,7 +280,7 @@ fn handle_workspace_keys(app: &mut App, key: KeyEvent) {
             return;
         }
         KeyCode::Char('O') => {
-            app.toggle_site_and_libraries_offline_sync();
+            app.open_sync_menu(SyncMenuScope::SiteAndLibraries);
             return;
         }
         KeyCode::Tab | KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
@@ -431,7 +431,7 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
             };
         }
         KeyCode::Char('o') => {
-            app.toggle_selected_library_offline_sync();
+            app.open_sync_menu(SyncMenuScope::SelectedLibrary);
         }
         KeyCode::Char('p') => {
             let lib_title = app
@@ -1098,5 +1098,53 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
             }
             _ => {}
         },
+        Modal::SyncControlMenu {
+            scope,
+            mut selected_idx,
+        } => match key.code {
+            KeyCode::Esc => app.modal = Modal::None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected_idx = selected_idx.checked_sub(1).unwrap_or(2);
+                app.modal = Modal::SyncControlMenu {
+                    scope,
+                    selected_idx,
+                };
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected_idx = (selected_idx + 1) % 3;
+                app.modal = Modal::SyncControlMenu {
+                    scope,
+                    selected_idx,
+                };
+            }
+            KeyCode::Char('1') => {
+                app.modal = Modal::None;
+                apply_sync_menu_choice(app, scope, 0);
+            }
+            KeyCode::Char('2') => {
+                app.modal = Modal::None;
+                apply_sync_menu_choice(app, scope, 1);
+            }
+            KeyCode::Char('3') => {
+                app.modal = Modal::None;
+                apply_sync_menu_choice(app, scope, 2);
+            }
+            KeyCode::Enter => {
+                app.modal = Modal::None;
+                apply_sync_menu_choice(app, scope, selected_idx);
+            }
+            _ => {}
+        },
+    }
+}
+
+fn apply_sync_menu_choice(app: &mut App, scope: SyncMenuScope, choice: usize) {
+    match (scope, choice) {
+        (SyncMenuScope::SelectedLibrary, 0) => app.toggle_selected_library_offline_sync(),
+        (SyncMenuScope::SelectedLibrary, 1) => app.toggle_selected_library_onedrive_shortcuts(),
+        (SyncMenuScope::SelectedLibrary, _) => app.toggle_selected_library_sync_and_shortcuts(),
+        (SyncMenuScope::SiteAndLibraries, 0) => app.toggle_site_and_libraries_offline_sync(),
+        (SyncMenuScope::SiteAndLibraries, 1) => app.toggle_site_and_libraries_onedrive_shortcuts(),
+        (SyncMenuScope::SiteAndLibraries, _) => app.toggle_site_and_libraries_sync_and_shortcuts(),
     }
 }

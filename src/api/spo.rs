@@ -1064,6 +1064,32 @@ impl SpoClient {
             .collect())
     }
 
+    /// Populate OneDrive shortcut button view formatting status (`views_total`, `views_hiding_shortcut`,
+    /// `shortcut_button_hidden`) for a list of libraries in parallel.
+    pub async fn populate_libraries_shortcut_status(
+        &self,
+        site_url: &str,
+        libs: Vec<crate::models::SpoLibrary>,
+    ) -> Vec<crate::models::SpoLibrary> {
+        let base = site_url.trim_end_matches('/');
+        futures::future::join_all(libs.into_iter().map(|mut l| async move {
+            let views = self
+                .get_library_views(base, &l.id)
+                .await
+                .unwrap_or_default();
+            let views_total = views.len();
+            let views_hiding_shortcut = views
+                .iter()
+                .filter(|v| Self::view_formatter_hides_shortcut(v.custom_formatter.as_deref()))
+                .count();
+            l.views_total = views_total;
+            l.views_hiding_shortcut = views_hiding_shortcut;
+            l.shortcut_button_hidden = views_total > 0 && views_hiding_shortcut == views_total;
+            l
+        }))
+        .await
+    }
+
     /// Inspect offline sync status (`ExcludeFromOfflineClient`) for a site, its document libraries, and optionally its subsites.
     pub async fn get_site_sync_status(
         &self,
@@ -1094,33 +1120,21 @@ impl SpoClient {
                 self.get_document_libraries(&base)
             )?;
 
-            let base_ref = &base;
-            let libraries = futures::future::join_all(libs.into_iter().map(|l| async move {
-                let views = self
-                    .get_library_views(base_ref, &l.id)
-                    .await
-                    .unwrap_or_default();
-                let views_total = views.len();
-                let views_hiding_shortcut = views
-                    .iter()
-                    .filter(|v| Self::view_formatter_hides_shortcut(v.custom_formatter.as_deref()))
-                    .count();
-                let shortcut_button_hidden =
-                    views_total > 0 && views_hiding_shortcut == views_total;
-
-                LibrarySyncStatus {
+            let populated = self.populate_libraries_shortcut_status(&base, libs).await;
+            let libraries = populated
+                .into_iter()
+                .map(|l| LibrarySyncStatus {
                     id: l.id,
                     title: l.title,
                     server_relative_url: l.server_relative_url,
                     is_default_documents: l.is_default_documents,
                     exclude_from_offline_client: l.exclude_from_offline_client,
                     sync_enabled: !l.exclude_from_offline_client,
-                    views_total,
-                    views_hiding_shortcut,
-                    shortcut_button_hidden,
-                }
-            }))
-            .await;
+                    views_total: l.views_total,
+                    views_hiding_shortcut: l.views_hiding_shortcut,
+                    shortcut_button_hidden: l.shortcut_button_hidden,
+                })
+                .collect();
 
             let mut subsites = Vec::new();
             if include_subsites {

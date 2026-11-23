@@ -399,9 +399,21 @@ pub enum MatrixCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SyncTarget {
+    /// Ambos: sincronización offline de SharePoint y accesos directos a OneDrive
+    All,
+    /// Solo sincronización offline de SharePoint (`ExcludeFromOfflineClient`)
+    #[value(alias = "offline", alias = "spo")]
+    Sharepoint,
+    /// Solo botón "Agregar acceso directo a OneDrive" (`CustomFormatter`)
+    #[value(alias = "shortcuts", alias = "accesos")]
+    Onedrive,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum SyncCommand {
-    /// Consulta el estado de sincronización offline (`ExcludeFromOfflineClient`) del sitio y sus bibliotecas
+    /// Consulta el estado de sincronización offline (`ExcludeFromOfflineClient`) y botón OneDrive del sitio y sus bibliotecas
     Status {
         #[arg(long = "site")]
         site: String,
@@ -409,7 +421,19 @@ pub enum SyncCommand {
         #[arg(long = "include-subsites")]
         include_subsites: bool,
     },
-    /// Desactiva la sincronización offline y los accesos directos a OneDrive (`ExcludeFromOfflineClient = true`)
+    /// Gestiona únicamente el bloqueo de sincronización offline de SharePoint (`ExcludeFromOfflineClient`)
+    #[command(visible_alias = "offline")]
+    Sharepoint {
+        #[command(subcommand)]
+        action: SharepointSyncCommand,
+    },
+    /// Gestiona únicamente el botón "Agregar acceso directo a OneDrive" (`CustomFormatter`)
+    #[command(visible_alias = "shortcuts")]
+    Onedrive {
+        #[command(subcommand)]
+        action: OneDriveShortcutsCommand,
+    },
+    /// Desactiva la sincronización offline de SharePoint y/o los accesos directos a OneDrive
     Disable {
         #[arg(long = "site")]
         site: String,
@@ -425,15 +449,18 @@ pub enum SyncCommand {
         /// Incluir subsitios de forma recursiva
         #[arg(long = "include-subsites")]
         include_subsites: bool,
-        /// No modificar el JSON View Formatting (`commandBarProps`) de las vistas de biblioteca
-        #[arg(long = "skip-view-formatting")]
+        /// Subopción a gestionar: `all` (por defecto), `sharepoint` (solo sync SharePoint) o `onedrive` (solo accesos directos OneDrive)
+        #[arg(long = "target", value_enum, default_value_t = SyncTarget::All)]
+        target: SyncTarget,
+        /// [Compatibilidad] No modificar el JSON View Formatting (`commandBarProps`) de las vistas de biblioteca (equivale a `--target sharepoint`)
+        #[arg(long = "skip-view-formatting", conflicts_with = "target")]
         skip_view_formatting: bool,
         #[arg(long = "note")]
         note: Option<String>,
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
-    /// Reactiva la sincronización offline y los accesos directos a OneDrive (`ExcludeFromOfflineClient = false`)
+    /// Reactiva la sincronización offline de SharePoint y/o los accesos directos a OneDrive
     Enable {
         #[arg(long = "site")]
         site: String,
@@ -449,9 +476,80 @@ pub enum SyncCommand {
         /// Incluir subsitios de forma recursiva
         #[arg(long = "include-subsites")]
         include_subsites: bool,
-        /// No restaurar/quitar el JSON View Formatting (`commandBarProps`) de las vistas de biblioteca
-        #[arg(long = "skip-view-formatting")]
+        /// Subopción a gestionar: `all` (por defecto), `sharepoint` (solo sync SharePoint) o `onedrive` (solo accesos directos OneDrive)
+        #[arg(long = "target", value_enum, default_value_t = SyncTarget::All)]
+        target: SyncTarget,
+        /// [Compatibilidad] No restaurar/quitar el JSON View Formatting (`commandBarProps`) de las vistas de biblioteca (equivale a `--target sharepoint`)
+        #[arg(long = "skip-view-formatting", conflicts_with = "target")]
         skip_view_formatting: bool,
+        #[arg(long = "note")]
+        note: Option<String>,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SharepointSyncCommand {
+    /// Bloquea la sincronización offline de SharePoint (`ExcludeFromOfflineClient = true`)
+    Disable {
+        #[arg(long = "site")]
+        site: String,
+        #[arg(long = "library", conflicts_with_all = ["site_only", "libraries_only", "include_subsites"])]
+        library: Option<String>,
+        #[arg(long = "site-only", conflicts_with = "libraries_only")]
+        site_only: bool,
+        #[arg(long = "libraries-only")]
+        libraries_only: bool,
+        #[arg(long = "include-subsites")]
+        include_subsites: bool,
+        #[arg(long = "note")]
+        note: Option<String>,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+    /// Permite la sincronización offline de SharePoint (`ExcludeFromOfflineClient = false`)
+    Enable {
+        #[arg(long = "site")]
+        site: String,
+        #[arg(long = "library", conflicts_with_all = ["site_only", "libraries_only", "include_subsites"])]
+        library: Option<String>,
+        #[arg(long = "site-only", conflicts_with = "libraries_only")]
+        site_only: bool,
+        #[arg(long = "libraries-only")]
+        libraries_only: bool,
+        #[arg(long = "include-subsites")]
+        include_subsites: bool,
+        #[arg(long = "note")]
+        note: Option<String>,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OneDriveShortcutsCommand {
+    /// Oculta el botón "Agregar acceso directo a OneDrive" en las vistas de biblioteca
+    Disable {
+        #[arg(long = "site")]
+        site: String,
+        #[arg(long = "library", conflicts_with = "include_subsites")]
+        library: Option<String>,
+        #[arg(long = "include-subsites")]
+        include_subsites: bool,
+        #[arg(long = "note")]
+        note: Option<String>,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+    /// Restaura el botón "Agregar acceso directo a OneDrive" en las vistas de biblioteca
+    Enable {
+        #[arg(long = "site")]
+        site: String,
+        #[arg(long = "library", conflicts_with = "include_subsites")]
+        library: Option<String>,
+        #[arg(long = "include-subsites")]
+        include_subsites: bool,
         #[arg(long = "note")]
         note: Option<String>,
         #[arg(long = "dry-run")]
@@ -1013,16 +1111,126 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                     print_site_sync_status_table(&status, 0);
                 })?;
             }
+            SyncCommand::Sharepoint { action } => match action {
+                SharepointSyncCommand::Disable {
+                    site,
+                    library,
+                    site_only,
+                    libraries_only,
+                    include_subsites,
+                    note,
+                    dry_run,
+                } => {
+                    handle_sync_toggle(
+                        &spo,
+                        &executor,
+                        &actor_upn,
+                        site,
+                        library,
+                        *site_only,
+                        *libraries_only,
+                        *include_subsites,
+                        SyncTarget::Sharepoint,
+                        note,
+                        *dry_run,
+                        true,
+                        format,
+                    )
+                    .await?;
+                }
+                SharepointSyncCommand::Enable {
+                    site,
+                    library,
+                    site_only,
+                    libraries_only,
+                    include_subsites,
+                    note,
+                    dry_run,
+                } => {
+                    handle_sync_toggle(
+                        &spo,
+                        &executor,
+                        &actor_upn,
+                        site,
+                        library,
+                        *site_only,
+                        *libraries_only,
+                        *include_subsites,
+                        SyncTarget::Sharepoint,
+                        note,
+                        *dry_run,
+                        false,
+                        format,
+                    )
+                    .await?;
+                }
+            },
+            SyncCommand::Onedrive { action } => match action {
+                OneDriveShortcutsCommand::Disable {
+                    site,
+                    library,
+                    include_subsites,
+                    note,
+                    dry_run,
+                } => {
+                    handle_sync_toggle(
+                        &spo,
+                        &executor,
+                        &actor_upn,
+                        site,
+                        library,
+                        false,
+                        true,
+                        *include_subsites,
+                        SyncTarget::Onedrive,
+                        note,
+                        *dry_run,
+                        true,
+                        format,
+                    )
+                    .await?;
+                }
+                OneDriveShortcutsCommand::Enable {
+                    site,
+                    library,
+                    include_subsites,
+                    note,
+                    dry_run,
+                } => {
+                    handle_sync_toggle(
+                        &spo,
+                        &executor,
+                        &actor_upn,
+                        site,
+                        library,
+                        false,
+                        true,
+                        *include_subsites,
+                        SyncTarget::Onedrive,
+                        note,
+                        *dry_run,
+                        false,
+                        format,
+                    )
+                    .await?;
+                }
+            },
             SyncCommand::Disable {
                 site,
                 library,
                 site_only,
                 libraries_only,
                 include_subsites,
+                target,
                 skip_view_formatting,
                 note,
                 dry_run,
             } => {
+                let effective_target = if *skip_view_formatting {
+                    SyncTarget::Sharepoint
+                } else {
+                    *target
+                };
                 handle_sync_toggle(
                     &spo,
                     &executor,
@@ -1032,7 +1240,7 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                     *site_only,
                     *libraries_only,
                     *include_subsites,
-                    !*skip_view_formatting,
+                    effective_target,
                     note,
                     *dry_run,
                     true,
@@ -1046,10 +1254,16 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                 site_only,
                 libraries_only,
                 include_subsites,
+                target,
                 skip_view_formatting,
                 note,
                 dry_run,
             } => {
+                let effective_target = if *skip_view_formatting {
+                    SyncTarget::Sharepoint
+                } else {
+                    *target
+                };
                 handle_sync_toggle(
                     &spo,
                     &executor,
@@ -1059,7 +1273,7 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                     *site_only,
                     *libraries_only,
                     *include_subsites,
-                    !*skip_view_formatting,
+                    effective_target,
                     note,
                     *dry_run,
                     false,
@@ -1078,10 +1292,13 @@ fn enqueue_sync_from_status(
     target_exclude: bool,
     site_only: bool,
     libraries_only: bool,
-    apply_view_formatting: bool,
+    target: SyncTarget,
     q: &mut StagingQueue,
 ) {
-    if !libraries_only && node.exclude_from_offline_client != target_exclude {
+    let manage_sharepoint = matches!(target, SyncTarget::All | SyncTarget::Sharepoint);
+    let manage_onedrive = matches!(target, SyncTarget::All | SyncTarget::Onedrive);
+
+    if manage_sharepoint && !libraries_only && node.exclude_from_offline_client != target_exclude {
         q.push(StagingOp::SetSiteOfflineSync {
             site_url: node.site_url.clone(),
             site_title: node.site_title.clone(),
@@ -1090,21 +1307,29 @@ fn enqueue_sync_from_status(
     }
     if !site_only {
         for lib in &node.libraries {
-            let flag_differs = lib.exclude_from_offline_client != target_exclude;
-            let views_differ = apply_view_formatting
-                && if target_exclude {
-                    lib.views_total > 0 && !lib.shortcut_button_hidden
-                } else {
-                    lib.views_hiding_shortcut > 0
-                };
-            if flag_differs || views_differ {
+            if manage_sharepoint && lib.exclude_from_offline_client != target_exclude {
                 q.push(StagingOp::SetLibraryOfflineSync {
                     site_url: node.site_url.clone(),
                     library_id: lib.id.clone(),
                     library_title: lib.title.clone(),
                     exclude_from_offline_client: target_exclude,
-                    apply_view_formatting,
+                    apply_view_formatting: false,
                 });
+            }
+            if manage_onedrive {
+                let views_differ = if target_exclude {
+                    lib.views_total > 0 && !lib.shortcut_button_hidden
+                } else {
+                    lib.views_hiding_shortcut > 0
+                };
+                if views_differ {
+                    q.push(StagingOp::SetLibraryOneDriveShortcuts {
+                        site_url: node.site_url.clone(),
+                        library_id: lib.id.clone(),
+                        library_title: lib.title.clone(),
+                        hide_shortcut_button: target_exclude,
+                    });
+                }
             }
         }
     }
@@ -1114,7 +1339,7 @@ fn enqueue_sync_from_status(
             target_exclude,
             site_only,
             libraries_only,
-            apply_view_formatting,
+            target,
             q,
         );
     }
@@ -1130,12 +1355,21 @@ async fn handle_sync_toggle(
     site_only: bool,
     libraries_only: bool,
     include_subsites: bool,
-    apply_view_formatting: bool,
+    target: SyncTarget,
     note: &Option<String>,
     dry_run: bool,
     target_exclude: bool,
     format: OutputFormat,
 ) -> Result<()> {
+    if target == SyncTarget::Onedrive && site_only {
+        anyhow::bail!(
+            "--site-only no aplica a los accesos directos de OneDrive, que se gestionan a nivel de vistas de biblioteca"
+        );
+    }
+
+    let manage_sharepoint = matches!(target, SyncTarget::All | SyncTarget::Sharepoint);
+    let manage_onedrive = matches!(target, SyncTarget::All | SyncTarget::Onedrive);
+
     let mut q = StagingQueue::new();
     let mut site_title = site.to_string();
 
@@ -1144,30 +1378,36 @@ async fn handle_sync_toggle(
         for name in raw_libs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             let lib = spo.resolve_library(site, name).await?;
             if seen_ids.insert(lib.id.to_lowercase()) {
-                let flag_differs = lib.exclude_from_offline_client != target_exclude;
-                let views_differ = if apply_view_formatting {
+                let clean_site = site.trim_end_matches('/').to_string();
+                if manage_sharepoint && lib.exclude_from_offline_client != target_exclude {
+                    q.push(StagingOp::SetLibraryOfflineSync {
+                        site_url: clean_site.clone(),
+                        library_id: lib.id.clone(),
+                        library_title: lib.title.clone(),
+                        exclude_from_offline_client: target_exclude,
+                        apply_view_formatting: false,
+                    });
+                }
+                if manage_onedrive {
                     let views = spo
                         .get_library_views(site, &lib.id)
                         .await
                         .unwrap_or_default();
-                    views.iter().any(|v| {
-                        SpoClient::build_sync_view_formatter(
+                    let views_differ = views.iter().any(|v| {
+                        SpoClient::build_shortcut_view_formatter(
                             v.custom_formatter.as_deref(),
                             target_exclude,
                         )
                         .is_some()
-                    })
-                } else {
-                    false
-                };
-                if flag_differs || views_differ {
-                    q.push(StagingOp::SetLibraryOfflineSync {
-                        site_url: site.trim_end_matches('/').to_string(),
-                        library_id: lib.id,
-                        library_title: lib.title,
-                        exclude_from_offline_client: target_exclude,
-                        apply_view_formatting,
                     });
+                    if views_differ {
+                        q.push(StagingOp::SetLibraryOneDriveShortcuts {
+                            site_url: clean_site,
+                            library_id: lib.id,
+                            library_title: lib.title,
+                            hide_shortcut_button: target_exclude,
+                        });
+                    }
                 }
             }
         }
@@ -1182,26 +1422,34 @@ async fn handle_sync_toggle(
             target_exclude,
             site_only,
             libraries_only,
-            apply_view_formatting,
+            target,
             &mut q,
         );
     }
 
     if q.is_empty() {
-        let desired = if target_exclude {
-            "desactivada (ExcludeFromOfflineClient=true)"
-        } else {
-            "activada (ExcludeFromOfflineClient=false)"
+        let desired = match (target, target_exclude) {
+            (SyncTarget::Sharepoint, true) => {
+                "sincronización SharePoint bloqueada (ExcludeFromOfflineClient=true)"
+            }
+            (SyncTarget::Sharepoint, false) => {
+                "sincronización SharePoint permitida (ExcludeFromOfflineClient=false)"
+            }
+            (SyncTarget::Onedrive, true) => "accesos directos a OneDrive ocultos",
+            (SyncTarget::Onedrive, false) => "accesos directos a OneDrive visibles",
+            (SyncTarget::All, true) => {
+                "sincronización SharePoint bloqueada y accesos directos a OneDrive ocultos"
+            }
+            (SyncTarget::All, false) => {
+                "sincronización SharePoint permitida y accesos directos a OneDrive visibles"
+            }
         };
         let report = ExecutionReport {
             status: "NO_CHANGES".to_string(),
             dry_run,
             transaction_id: None,
             site_url: site.to_string(),
-            summary: format!(
-                "Sin cambios: el objetivo ya tenía la sincronización {}",
-                desired
-            ),
+            summary: format!("Sin cambios: el objetivo ya tenía {}", desired),
             operations: Vec::new(),
         };
         return print_execution_report(&report, format);
@@ -1435,6 +1683,82 @@ mod tests {
             "https://contoso.sharepoint.com/sites/Test",
             "--site-only",
             "--libraries-only",
+        ])
+        .is_err());
+
+        // Suboptions: `sync sharepoint ...`, `sync onedrive ...`, and `--target`
+        let sp_disable = Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "sharepoint",
+            "disable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--include-subsites",
+        ])
+        .unwrap();
+        assert!(matches!(
+            sp_disable.command,
+            Some(Commands::Sync {
+                action: SyncCommand::Sharepoint {
+                    action: SharepointSyncCommand::Disable {
+                        include_subsites: true,
+                        ..
+                    }
+                }
+            })
+        ));
+
+        let od_enable = Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "onedrive",
+            "enable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--library",
+            "Documentos",
+        ])
+        .unwrap();
+        assert!(matches!(
+            od_enable.command,
+            Some(Commands::Sync {
+                action: SyncCommand::Onedrive {
+                    action: OneDriveShortcutsCommand::Enable { .. }
+                }
+            })
+        ));
+
+        let target_od = Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "disable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--target",
+            "onedrive",
+        ])
+        .unwrap();
+        assert!(matches!(
+            target_od.command,
+            Some(Commands::Sync {
+                action: SyncCommand::Disable {
+                    target: SyncTarget::Onedrive,
+                    ..
+                }
+            })
+        ));
+
+        // `--skip-view-formatting` conflicts with `--target`
+        assert!(Cli::try_parse_from([
+            "spoiberia",
+            "sync",
+            "disable",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--target",
+            "all",
+            "--skip-view-formatting",
         ])
         .is_err());
     }

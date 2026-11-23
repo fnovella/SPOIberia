@@ -149,6 +149,12 @@ pub struct SpoLibrary {
     pub is_default_documents: bool,
     #[serde(default)]
     pub exclude_from_offline_client: bool,
+    #[serde(default)]
+    pub views_total: usize,
+    #[serde(default)]
+    pub views_hiding_shortcut: usize,
+    #[serde(default)]
+    pub shortcut_button_hidden: bool,
 }
 
 /// Offline client synchronization status (`ExcludeFromOfflineClient`) for a site and its libraries.
@@ -298,6 +304,12 @@ pub enum StagingOp {
         #[serde(default = "default_true")]
         apply_view_formatting: bool,
     },
+    SetLibraryOneDriveShortcuts {
+        site_url: String,
+        library_id: String,
+        library_title: String,
+        hide_shortcut_button: bool,
+    },
 }
 
 impl StagingOp {
@@ -314,6 +326,7 @@ impl StagingOp {
             StagingOp::ServerSideCopy { .. } => "COPY_SERVER_SIDE_ITEM",
             StagingOp::SetSiteOfflineSync { .. } => "SET_SITE_OFFLINE_SYNC",
             StagingOp::SetLibraryOfflineSync { .. } => "SET_LIBRARY_OFFLINE_SYNC",
+            StagingOp::SetLibraryOneDriveShortcuts { .. } => "SET_LIBRARY_ONEDRIVE_SHORTCUTS",
         }
     }
 
@@ -328,7 +341,8 @@ impl StagingOp {
             | StagingOp::AssignFolderRole { site_url, .. }
             | StagingOp::AssignSiteRole { site_url, .. }
             | StagingOp::SetSiteOfflineSync { site_url, .. }
-            | StagingOp::SetLibraryOfflineSync { site_url, .. } => site_url,
+            | StagingOp::SetLibraryOfflineSync { site_url, .. }
+            | StagingOp::SetLibraryOneDriveShortcuts { site_url, .. } => site_url,
             StagingOp::ServerSideCopy {
                 target_site_url, ..
             } => target_site_url,
@@ -416,12 +430,12 @@ impl StagingOp {
             } => {
                 if *exclude_from_offline_client {
                     format!(
-                        "[-Sync] Desactivar sincronización offline en el sitio '{}'",
+                        "[-Sync] Bloquear sincronización SharePoint en el sitio '{}'",
                         site_title
                     )
                 } else {
                     format!(
-                        "[+Sync] Activar sincronización offline en el sitio '{}'",
+                        "[+Sync] Permitir sincronización SharePoint en el sitio '{}'",
                         site_title
                     )
                 }
@@ -437,7 +451,7 @@ impl StagingOp {
                     library_title
                 ),
                 (true, false) => format!(
-                    "[-Sync] Desactivar sincronización offline en biblioteca '{}'",
+                    "[-Sync] Bloquear sincronización SharePoint en biblioteca '{}'",
                     library_title
                 ),
                 (false, true) => format!(
@@ -445,10 +459,27 @@ impl StagingOp {
                     library_title
                 ),
                 (false, false) => format!(
-                    "[+Sync] Activar sincronización offline en biblioteca '{}'",
+                    "[+Sync] Permitir sincronización SharePoint en biblioteca '{}'",
                     library_title
                 ),
             },
+            StagingOp::SetLibraryOneDriveShortcuts {
+                library_title,
+                hide_shortcut_button,
+                ..
+            } => {
+                if *hide_shortcut_button {
+                    format!(
+                        "[-AtajoOD] Ocultar acceso directo a OneDrive en biblioteca '{}'",
+                        library_title
+                    )
+                } else {
+                    format!(
+                        "[+AtajoOD] Mostrar acceso directo a OneDrive en biblioteca '{}'",
+                        library_title
+                    )
+                }
+            }
         }
     }
 }
@@ -506,6 +537,12 @@ pub enum ReversePayload {
         previous_exclude_from_offline_client: bool,
         #[serde(default = "default_true")]
         restore_exclude_flag: bool,
+        #[serde(default)]
+        previous_view_formatters: Vec<ViewFormatterBackup>,
+    },
+    RestoreLibraryOneDriveShortcuts {
+        site_url: String,
+        library_id: String,
         #[serde(default)]
         previous_view_formatters: Vec<ViewFormatterBackup>,
     },

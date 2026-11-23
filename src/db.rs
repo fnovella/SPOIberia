@@ -504,5 +504,44 @@ mod tests {
             }
             other => panic!("unexpected legacy payload: {:?}", other),
         }
+
+        // Verify RestoreLibraryOneDriveShortcuts roundtrip
+        let rev_od = ReversePayload::RestoreLibraryOneDriveShortcuts {
+            site_url: site.to_string(),
+            library_id: lib_id.to_string(),
+            previous_view_formatters: vec![ViewFormatterBackup {
+                view_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                view_title: "All Documents".to_string(),
+                previous_custom_formatter: String::new(),
+            }],
+        };
+        db.record_operation(
+            tx_id,
+            3,
+            "SET_LIBRARY_ONEDRIVE_SHORTCUTS",
+            "[-AtajoOD] Ocultar acceso directo a OneDrive en biblioteca 'Documentos'",
+            "{}",
+            &rev_od,
+            "APPLIED",
+            None,
+        )
+        .unwrap();
+        let ops_after = db.get_transaction_operations(tx_id).unwrap();
+        assert_eq!(ops_after.len(), 3);
+        let parsed_od: ReversePayload = serde_json::from_str(&ops_after[2].reverse_payload).unwrap();
+        match parsed_od {
+            ReversePayload::RestoreLibraryOneDriveShortcuts {
+                site_url,
+                library_id,
+                previous_view_formatters,
+            } => {
+                assert_eq!(site_url, site);
+                assert_eq!(library_id, lib_id);
+                assert_eq!(previous_view_formatters.len(), 1);
+                assert_eq!(previous_view_formatters[0].view_title, "All Documents");
+                assert_eq!(previous_view_formatters[0].previous_custom_formatter, "");
+            }
+            other => panic!("unexpected OneDrive reverse payload: {:?}", other),
+        }
     }
 }
