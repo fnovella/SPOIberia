@@ -4,7 +4,7 @@ use crate::auth::AuthManager;
 use crate::cloner::SiteClonerEngine;
 use crate::db::Database;
 use crate::importer::MatrixImporter;
-use crate::models::{CloneConfig, SiteSyncStatus, StagingOp};
+use crate::models::{CloneConfig, CloneMode, SiteSyncStatus, StagingOp};
 use crate::staging::{ExecutionReport, StagingQueue, TransactionExecutor};
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -17,6 +17,16 @@ pub enum OutputFormat {
     Table,
     Json,
     Csv,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CloneModeArg {
+    /// Mantiene el contenido existente en destino y añade/sobreescribe lo del origen (por defecto)
+    #[value(alias = "aditivo")]
+    Additive,
+    /// DESTRUCTIVO: elimina bibliotecas, carpetas, archivos, grupos y usuarios existentes en destino antes de clonar
+    #[value(alias = "destructivo")]
+    Destructive,
 }
 
 #[derive(Debug, Parser)]
@@ -37,6 +47,16 @@ pub struct Cli {
     /// Modo no interactivo (nunca bloquea esperando prompts)
     #[arg(long = "non-interactive", global = true)]
     pub non_interactive: bool,
+
+    /// Idioma de la interfaz TUI (`auto`, `es`, `en`) / TUI language (`auto`, `es`, `en`)
+    #[arg(
+        long = "lang",
+        global = true,
+        env = "SPOIBERIA_LANG",
+        value_enum,
+        default_value_t = crate::i18n::LangArg::Auto
+    )]
+    pub lang: crate::i18n::LangArg,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -144,6 +164,14 @@ pub enum Commands {
         /// Sobreescribir archivos existentes en el destino
         #[arg(long = "overwrite")]
         overwrite: bool,
+
+        /// Modo de clonado: `additive` (por defecto) o `destructive` (BORRA contenido y grupos previos del destino)
+        #[arg(long = "mode", value_enum, default_value_t = CloneModeArg::Additive)]
+        mode: CloneModeArg,
+
+        /// Confirmación explícita requerida para ejecutar `--mode destructive` sin `--dry-run`
+        #[arg(long = "confirm-destructive")]
+        confirm_destructive: bool,
 
         /// Nota descriptiva para la transacción en SQLite
         #[arg(long = "note")]
@@ -1058,9 +1086,24 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
             skip_files,
             skip_unique_permissions,
             overwrite,
+            mode,
+            confirm_destructive,
             note,
             dry_run,
         } => {
+            if *mode == CloneModeArg::Destructive {
+                if !*dry_run && !*confirm_destructive {
+                    anyhow::bail!(
+                        "⚠ MODO DESTRUCTIVO: esta operación ELIMINARÁ bibliotecas, carpetas, archivos, grupos y usuarios existentes en '{}' antes de clonar (no reversible por Rollback). Revisa primero el plan con `--dry-run` y añade `--confirm-destructive` para ejecutarlo.",
+                        target_site
+                    );
+                }
+                eprintln!(
+                    "⚠ ADVERTENCIA [MODO DESTRUCTIVO]: Se eliminarán bibliotecas, carpetas, archivos, grupos y usuarios existentes en '{}' antes de clonar.",
+                    target_site
+                );
+            }
+
             let libs_filter = if libraries.trim().eq_ignore_ascii_case("all") {
                 None
             } else {
@@ -1083,6 +1126,11 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                 include_unique_permissions: !skip_unique_permissions,
                 overwrite: *overwrite,
                 note: note.clone(),
+                mode: match mode {
+                    CloneModeArg::Additive => CloneMode::Additive,
+                    CloneModeArg::Destructive => CloneMode::Destructive,
+                },
+                current_actor_upn: Some(actor_upn.clone()),
             };
 
             let cloner = SiteClonerEngine::new(spo.clone());
@@ -1777,5 +1825,59 @@ mod tests {
             "--skip-view-formatting",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn test_clone_mode_cli_parsing() {
+        let additive = Cli::try_parse_from([
+            "spoiberia",
+            "clone",
+            "--source-site",
+            "https://contoso.sharepoint.com/sites/Src",
+            "--target-site",
+            "https://contoso.sharepoint.com/sites/Tgt",
+        ])
+        .unwrap();
+        assert!(matches!(
+            additive.command,
+            Some(Commands::Clone {
+                mode: CloneModeArg::Additive,
+                confirm_destructive: false,
+                ..
+            })
+        ));
+
+        let destructive = Cli::try_parse_from([
+            "spoiberia",
+            "clone",
+            "--source-site",
+            "https://contoso.sharepoint.com/sites/Src",
+            "--target-site",
+            "https://contoso.sharepoint.com/sites/Tgt",
+            "--mode",
+            "destructive",
+            "--confirm-destructive",
+        ])
+        .unwrap();
+        assert!(matches!(
+            destructive.command,
+            Some(Commands::Clone {
+                mode: CloneModeArg::Destructive,
+                confirm_destructive: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_lang_flag_parsing() {
+        let cli_en = Cli::try_parse_from(["spoiberia", "--lang", "en"]).unwrap();
+        assert_eq!(cli_en.lang, crate::i18n::LangArg::En);
+
+        let cli_es = Cli::try_parse_from(["spoiberia", "--lang", "es", "tui"]).unwrap();
+        assert_eq!(cli_es.lang, crate::i18n::LangArg::Es);
+
+        let cli_auto = Cli::try_parse_from(["spoiberia"]).unwrap();
+        assert_eq!(cli_auto.lang, crate::i18n::LangArg::Auto);
     }
 }

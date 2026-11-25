@@ -967,6 +967,37 @@ impl SpoClient {
         Ok(())
     }
 
+    pub async fn delete_file(&self, site_url: &str, server_relative_url: &str) -> Result<()> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let escaped = server_relative_url.replace('\'', "''");
+        let url = format!(
+            "{}/_api/web/GetFileByServerRelativePath(decodedurl='{}')",
+            base,
+            urlencoding::encode(&escaped)
+        );
+
+        let resp = send_with_retry(|| {
+            self.http
+                .delete(&url)
+                .bearer_auth(&token)
+                .header("Accept", SPO_JSON_ACCEPT)
+                .header("X-HTTP-Method", "DELETE")
+                .header("If-Match", "*")
+        })
+        .await?;
+
+        if !resp.status().is_success() {
+            let err_txt = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Error eliminando archivo '{}': {}",
+                server_relative_url,
+                err_txt
+            ));
+        }
+        Ok(())
+    }
+
     /// Check if a folder currently has unique role assignments (`HasUniqueRoleAssignments`).
     pub async fn folder_has_unique_roles(
         &self,

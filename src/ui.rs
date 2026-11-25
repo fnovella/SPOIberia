@@ -1,6 +1,7 @@
 use crate::app::{
     App, Modal, PaneFocus, Screen, SyncMenuScope, WorkspaceTab, STANDARD_ROLES,
 };
+use crate::i18n::Lang;
 use crate::models::{GroupKind, SiteRole};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -175,10 +176,14 @@ pub fn draw_ui(f: &mut Frame<'_>, app: &App) {
 }
 
 fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let lang = app.lang;
     let pending_cnt = app.staging.len();
     let staging_span = if pending_cnt > 0 {
         Span::styled(
-            format!(" ● [Staging: {} cambio(s) pendiente(s) — Pulsa 'A' para Aplicar] ", pending_cnt),
+            match lang {
+                Lang::Es => format!(" ● [Staging: {} cambio(s) pendiente(s) — Pulsa 'A' para Aplicar] ", pending_cnt),
+                Lang::En => format!(" ● [Staging: {} pending change(s) — Press 'A' to Apply] ", pending_cnt),
+            },
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::LightGreen)
@@ -186,13 +191,13 @@ fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
         )
     } else {
         Span::styled(
-            " [Staging: 0 cambios] ",
+            lang.tr(" [Staging: 0 cambios] ", " [Staging: 0 changes] "),
             Style::default().fg(Color::DarkGray),
         )
     };
 
     let user_label = if app.user_upn.is_empty() {
-        "No autenticado".to_string()
+        lang.tr("No autenticado", "Not signed in").to_string()
     } else {
         format!("{} ({})", app.user_display_name, app.user_upn)
     };
@@ -208,14 +213,14 @@ fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
         .and_then(|s| app.staging.site_sync_staging_state(&s.url))
     {
         Some(true) => Span::styled(
-            " [Sync: BLOQUEAR*] ",
+            lang.tr(" [Sync: BLOQUEAR*] ", " [Sync: BLOCK*] "),
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::LightRed)
                 .add_modifier(Modifier::BOLD),
         ),
         Some(false) => Span::styled(
-            " [Sync: ACTIVAR*] ",
+            lang.tr(" [Sync: ACTIVAR*] ", " [Sync: ALLOW*] "),
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::LightGreen)
@@ -223,13 +228,13 @@ fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
         ),
         None => match app.site_exclude_from_offline_client {
             Some(true) => Span::styled(
-                " [Sync: BLOQUEADA] ",
+                lang.tr(" [Sync: BLOQUEADA] ", " [Sync: BLOCKED] "),
                 Style::default()
                     .fg(Color::LightRed)
                     .add_modifier(Modifier::BOLD),
             ),
             Some(false) => Span::styled(
-                " [Sync: ACTIVA] ",
+                lang.tr(" [Sync: ACTIVA] ", " [Sync: ACTIVE] "),
                 Style::default().fg(Color::LightGreen),
             ),
             None => Span::raw(""),
@@ -245,7 +250,10 @@ fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" Usuario: {} ", user_label),
+            match lang {
+                Lang::Es => format!(" Usuario: {} ", user_label),
+                Lang::En => format!(" User: {} ", user_label),
+            },
             Style::default().fg(Color::White),
         ),
         Span::styled(site_context, Style::default().fg(Color::Yellow)),
@@ -262,15 +270,19 @@ fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_auth_screen(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let lang = app.lang;
     let block = Block::default()
-        .title(" Autenticación Microsoft 365 (Entra ID OAuth2) ")
+        .title(lang.tr(
+            " Autenticación Microsoft 365 (Entra ID OAuth2) ",
+            " Microsoft 365 Authentication (Entra ID OAuth2) ",
+        ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan));
 
     let email_display = if app.login_email_input.is_empty() {
         Span::styled(
-            "usuario@dominio.com█",
+            lang.tr("usuario@dominio.com█", "user@domain.com█"),
             Style::default().fg(Color::DarkGray),
         )
     } else {
@@ -285,42 +297,66 @@ fn draw_auth_screen(f: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Bienvenido a SPOIberia — Gestión de Autorizaciones, Carpetas y Clonado en SharePoint Online",
+            lang.tr(
+                "Bienvenido a SPOIberia — Gestión de Autorizaciones, Carpetas y Clonado en SharePoint Online",
+                "Welcome to SPOIberia — SharePoint Online Permissions, Provisioning & Site Cloning",
+            ),
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("Introduce tu correo corporativo M365 (para detectar automáticamente el tenant):"),
+        Line::from(lang.tr(
+            "Introduce tu correo corporativo M365 (para detectar automáticamente el tenant):",
+            "Enter your M365 corporate email (to auto-detect your tenant):",
+        )),
         Line::from(vec![
-            Span::styled("  Correo / Dominio / Tenant: [ ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                lang.tr("  Correo / Dominio / Tenant: [ ", "  Email / Domain / Tenant: [ "),
+                Style::default().fg(Color::Cyan),
+            ),
             email_display,
             Span::styled(" ]", Style::default().fg(Color::Cyan)),
         ]),
         Line::from(""),
-        Line::from("Selecciona un método de inicio de sesión nativo contra Microsoft Entra ID:"),
+        Line::from(lang.tr(
+            "Selecciona un método de inicio de sesión nativo contra Microsoft Entra ID:",
+            "Choose a native Microsoft Entra ID sign-in method:",
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("  [    Enter    ] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::raw("Iniciar sesión interactivo en el navegador (OAuth2 + PKCE)"),
+            Span::raw(lang.tr(
+                "Iniciar sesión interactivo en el navegador (OAuth2 + PKCE)",
+                "Interactive browser sign-in (OAuth2 + PKCE)",
+            )),
         ]),
         Line::from(vec![
             Span::styled("  [ F2 / Ctrl+D ] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Iniciar sesión mediante Código de Dispositivo (Device Code Flow)"),
+            Span::raw(lang.tr(
+                "Iniciar sesión mediante Código de Dispositivo (Device Code Flow)",
+                "Sign in using Device Code Flow",
+            )),
         ]),
         Line::from(vec![
             Span::styled("  [     Esc     ] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::raw("Salir"),
+            Span::raw(lang.tr("Salir", "Quit")),
         ]),
     ];
 
     if let Some(ref prompt) = app.device_code_prompt {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "─── CÓDIGO DE DISPOSITIVO ACTIVO ───",
+            lang.tr(
+                "─── CÓDIGO DE DISPOSITIVO ACTIVO ───",
+                "─── ACTIVE DEVICE CODE ───",
+            ),
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )));
-        lines.push(Line::from(format!("1. Abre en tu navegador: {}", prompt.verification_uri)));
+        lines.push(Line::from(match lang {
+            Lang::Es => format!("1. Abre en tu navegador: {}", prompt.verification_uri),
+            Lang::En => format!("1. Open in your browser: {}", prompt.verification_uri),
+        }));
         lines.push(Line::from(vec![
-            Span::raw("2. Introduce el código:  "),
+            Span::raw(lang.tr("2. Introduce el código:  ", "2. Enter the code:     ")),
             Span::styled(
                 &prompt.user_code,
                 Style::default()
@@ -339,26 +375,45 @@ fn draw_auth_screen(f: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_site_selector(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let lang = app.lang;
     let filtered = app.filtered_sites();
     let filter_info = if app.site_filter.is_empty() {
         String::new()
     } else {
-        format!(" [Filtro: '{}']", app.site_filter)
+        match lang {
+            Lang::Es => format!(" [Filtro: '{}']", app.site_filter),
+            Lang::En => format!(" [Filter: '{}']", app.site_filter),
+        }
     };
     let clone_src_info = if app.clone_source_url.is_empty() {
         String::new()
     } else {
-        format!(" [Origen Clonado: {}]", app.clone_source_url)
+        match lang {
+            Lang::Es => format!(" [Origen Clonado: {}]", app.clone_source_url),
+            Lang::En => format!(" [Clone Source: {}]", app.clone_source_url),
+        }
     };
 
-    let title = format!(
-        " Sitios SharePoint donde eres Administrador o Propietario ({} sitios){}{} ",
-        filtered.len(),
-        filter_info,
-        clone_src_info
-    );
+    let title = match lang {
+        Lang::Es => format!(
+            " Sitios SharePoint donde eres Administrador o Propietario ({} sitios){}{} ",
+            filtered.len(),
+            filter_info,
+            clone_src_info
+        ),
+        Lang::En => format!(
+            " SharePoint Sites where you are Admin or Owner ({} sites){}{} ",
+            filtered.len(),
+            filter_info,
+            clone_src_info
+        ),
+    };
 
-    let header = Row::new(vec!["Rol", "Título del Sitio", "URL de SharePoint Online"])
+    let header = Row::new(vec![
+        lang.tr("Rol", "Role"),
+        lang.tr("Título del Sitio", "Site Title"),
+        lang.tr("URL de SharePoint Online", "SharePoint Online URL"),
+    ])
         .style(
             Style::default()
                 .fg(Color::Cyan)
@@ -424,21 +479,34 @@ fn draw_site_selector(f: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_site_workspace(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let lang = app.lang;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(8)])
         .split(area);
 
-    let tab_titles = vec![
-        format!(" [1] Grupos y Usuarios ({}) ", app.groups.len()),
-        format!(" [2] Bibliotecas y Carpetas ({}) ", app.libraries.len()),
-        " [3] Clonar Sitio SharePoint ".to_string(),
-        format!(
-            " [4] Cola Staging ({}) e Historial SQLite ({}) ",
-            app.staging.len(),
-            app.transactions.len()
-        ),
-    ];
+    let tab_titles = match lang {
+        Lang::Es => vec![
+            format!(" [1] Grupos y Usuarios ({}) ", app.groups.len()),
+            format!(" [2] Bibliotecas y Carpetas ({}) ", app.libraries.len()),
+            " [3] Clonar Sitio SharePoint ".to_string(),
+            format!(
+                " [4] Cola Staging ({}) e Historial SQLite ({}) ",
+                app.staging.len(),
+                app.transactions.len()
+            ),
+        ],
+        Lang::En => vec![
+            format!(" [1] Groups & Users ({}) ", app.groups.len()),
+            format!(" [2] Libraries & Folders ({}) ", app.libraries.len()),
+            " [3] Clone SharePoint Site ".to_string(),
+            format!(
+                " [4] Staging Queue ({}) & SQLite History ({}) ",
+                app.staging.len(),
+                app.transactions.len()
+            ),
+        ],
+    };
 
     let selected_tab_idx = match app.tab {
         WorkspaceTab::GroupsAndUsers => 0,
@@ -460,7 +528,10 @@ fn draw_site_workspace(f: &mut Frame<'_>, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .title(" Módulos del Sitio (Teclas 1, 2, 3, 4 | Esc: Volver a Sitios) "),
+                .title(lang.tr(
+                    " Módulos del Sitio (Teclas 1, 2, 3, 4 | Esc: Volver a Sitios) ",
+                    " Site Modules (Keys 1, 2, 3, 4 | Esc: Back to Sites) ",
+                )),
         );
     f.render_widget(tabs, chunks[0]);
 
@@ -535,10 +606,16 @@ fn draw_tab_groups_and_users(f: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let groups_block = Block::default()
-        .title(format!(
-            " Grupos del Sitio ({}) [g: Nuevo Grupo] ",
-            app.groups.len()
-        ))
+        .title(match app.lang {
+            Lang::Es => format!(
+                " Grupos del Sitio ({}) [g: Nuevo Grupo] ",
+                app.groups.len()
+            ),
+            Lang::En => format!(
+                " Site Groups ({}) [g: New Group] ",
+                app.groups.len()
+            ),
+        })
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if left_focused {
@@ -574,7 +651,9 @@ fn draw_tab_groups_and_users(f: &mut Frame<'_>, app: &App, area: Rect) {
                 "[+ STAGED]".to_string(),
                 disp.clone(),
                 ident.clone(),
-                "Pendiente Aplicar ('A')".to_string(),
+                app.lang
+                    .tr("Pendiente Aplicar ('A')", "Pending Apply ('A')")
+                    .to_string(),
             ])
             .style(
                 Style::default()
@@ -597,20 +676,20 @@ fn draw_tab_groups_and_users(f: &mut Frame<'_>, app: &App, area: Rect) {
         let is_sel = idx == app.selected_member_idx;
         let (status_col, mut style) = match staged_state {
             Some(false) => (
-                "[- BAJA]".to_string(),
+                app.lang.tr("[- BAJA]", "[- REMOVE]").to_string(),
                 Style::default()
                     .fg(Color::LightRed)
                     .add_modifier(Modifier::CROSSED_OUT),
             ),
             Some(true) => (
-                "[+ ALTA]".to_string(),
+                app.lang.tr("[+ ALTA]", "[+ ADD]").to_string(),
                 Style::default().fg(Color::LightGreen),
             ),
             None => (
                 if u.is_site_admin {
                     "[Admin]".to_string()
                 } else {
-                    "Activo".to_string()
+                    app.lang.tr("Activo", "Active").to_string()
                 },
                 Style::default().fg(Color::White),
             ),
@@ -650,7 +729,12 @@ fn draw_tab_groups_and_users(f: &mut Frame<'_>, app: &App, area: Rect) {
         ],
     )
     .header(
-        Row::new(vec!["Estado", "Nombre", "Email / UPN", "SP ID"])
+        Row::new(vec![
+            app.lang.tr("Estado", "Status"),
+            app.lang.tr("Nombre", "Name"),
+            "Email / UPN",
+            "SP ID",
+        ])
             .style(
                 Style::default()
                     .fg(Color::Cyan)
@@ -660,11 +744,18 @@ fn draw_tab_groups_and_users(f: &mut Frame<'_>, app: &App, area: Rect) {
     )
     .block(
         Block::default()
-            .title(format!(
-                " Miembros de '{}' ({}) [a: Asignar | d: Remover | A: Aplicar] ",
-                current_grp_title,
-                app.group_members.len()
-            ))
+            .title(match app.lang {
+                Lang::Es => format!(
+                    " Miembros de '{}' ({}) [a: Asignar | d: Remover | A: Aplicar] ",
+                    current_grp_title,
+                    app.group_members.len()
+                ),
+                Lang::En => format!(
+                    " Members of '{}' ({}) [a: Add | d: Remove | A: Apply] ",
+                    current_grp_title,
+                    app.group_members.len()
+                ),
+            })
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if right_focused {
@@ -762,7 +853,10 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
                 Span::styled(od_tag, od_style),
                 Span::styled(def_tag, Style::default().fg(Color::LightGreen).bg(bg)),
                 Span::styled(
-                    format!("{} ({} ítems)", l.title, l.item_count),
+                    match app.lang {
+                        Lang::Es => format!("{} ({} ítems)", l.title, l.item_count),
+                        Lang::En => format!("{} ({} items)", l.title, l.item_count),
+                    },
                     Style::default()
                         .fg(Color::White)
                         .bg(bg)
@@ -773,7 +867,10 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let lib_block = Block::default()
-        .title(" Bibliotecas [b: Nueva | o: Sync/OneDrive] ")
+        .title(app.lang.tr(
+            " Bibliotecas [b: Nueva | o: Sync/OneDrive] ",
+            " Libraries [b: New | o: Sync/OneDrive] ",
+        ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if left_focused {
@@ -804,9 +901,13 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
             let is_sel = idx == app.selected_folder_idx;
             let perms_desc = if folder.role_assignments.is_empty() {
                 if folder.has_unique_role_assignments {
-                    "Permisos únicos".to_string()
+                    app.lang
+                        .tr("Permisos únicos", "Unique permissions")
+                        .to_string()
                 } else {
-                    "Hereda de biblioteca".to_string()
+                    app.lang
+                        .tr("Hereda de biblioteca", "Inherits from library")
+                        .to_string()
                 }
             } else {
                 folder
@@ -831,9 +932,9 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
             Row::new(vec![
                 folder.relative_path.clone(),
                 if folder.has_unique_role_assignments {
-                    "Únicos (Rota)".to_string()
+                    app.lang.tr("Únicos (Rota)", "Unique (Broken)").to_string()
                 } else {
-                    "Heredados".to_string()
+                    app.lang.tr("Heredados", "Inherited").to_string()
                 },
                 perms_desc,
             ])
@@ -851,9 +952,9 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
     )
     .header(
         Row::new(vec![
-            "Carpeta (Ruta Relativa)",
-            "Herencia",
-            "Grupos y Permisos Asignados",
+            app.lang.tr("Carpeta (Ruta Relativa)", "Folder (Relative Path)"),
+            app.lang.tr("Herencia", "Inheritance"),
+            app.lang.tr("Grupos y Permisos Asignados", "Assigned Groups & Permissions"),
         ])
         .style(
             Style::default()
@@ -864,10 +965,16 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
     )
     .block(
         Block::default()
-            .title(format!(
-                " Carpetas en '{}' [n: Crear Carpeta | p: Asignar Permiso | i: Importar CSV/JSON | e: Exportar] ",
-                current_lib
-            ))
+            .title(match app.lang {
+                Lang::Es => format!(
+                    " Carpetas en '{}' [n: Crear Carpeta | p: Asignar Permiso | i: Importar CSV/JSON | e: Exportar] ",
+                    current_lib
+                ),
+                Lang::En => format!(
+                    " Folders in '{}' [n: New Folder | p: Grant Permission | i: Import CSV/JSON | e: Export] ",
+                    current_lib
+                ),
+            })
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if right_focused {
@@ -889,6 +996,7 @@ fn draw_tab_libraries_and_folders(f: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_tab_clone_site(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let lang = app.lang;
     let target_url = app
         .current_site
         .as_ref()
@@ -896,43 +1004,86 @@ fn draw_tab_clone_site(f: &mut Frame<'_>, app: &App, area: Rect) {
         .unwrap_or("-");
 
     let src_display = if app.clone_source_url.is_empty() {
-        "(No seleccionado — pulsa 's' para escribir URL o 'c' en el Selector de Sitios)".to_string()
+        lang.tr(
+            "(No seleccionado — pulsa 's' para escribir URL o 'c' en el Selector de Sitios)",
+            "(Not selected — press 's' to enter URL or 'c' in the Site Selector)",
+        )
+        .to_string()
     } else {
         app.clone_source_url.clone()
     };
 
-    let options = [
-        format!(
-            "[{}] 1. Clonar Grupos Asociados (Owners/Members/Visitors), Grupos Custom y sus Miembros",
-            if app.clone_include_groups { "x" } else { " " }
-        ),
-        format!(
-            "[{}] 2. Clonar Bibliotecas y Copiar Carpetas/Archivos Server-Side (conservando historial)",
-            if app.clone_include_files { "x" } else { " " }
-        ),
-        format!(
-            "[{}] 3. Replicar Permisos Únicos a nivel de Carpeta (Herencia Rota top-down)",
-            if app.clone_include_unique_perms { "x" } else { " " }
-        ),
-        format!(
-            "[{}] 4. Sobreescribir archivos si ya existen en el destino",
-            if app.clone_overwrite { "x" } else { " " }
-        ),
-    ];
+    let options = match lang {
+        Lang::Es => [
+            format!(
+                "[{}] 1. Clonar Grupos Asociados (Owners/Members/Visitors), Grupos Custom y sus Miembros",
+                if app.clone_include_groups { "x" } else { " " }
+            ),
+            format!(
+                "[{}] 2. Clonar Bibliotecas y Copiar Carpetas/Archivos Server-Side (conservando historial)",
+                if app.clone_include_files { "x" } else { " " }
+            ),
+            format!(
+                "[{}] 3. Replicar Permisos Únicos a nivel de Carpeta (Herencia Rota top-down)",
+                if app.clone_include_unique_perms { "x" } else { " " }
+            ),
+            format!(
+                "[{}] 4. Sobreescribir archivos si ya existen en el destino",
+                if app.clone_overwrite { "x" } else { " " }
+            ),
+            if app.clone_destructive {
+                "[x] 5. MODO DESTRUCTIVO: BORRAR bibliotecas, carpetas, archivos, grupos y usuarios del destino antes de clonar".to_string()
+            } else {
+                "[ ] 5. Modo de clonado: ADITIVO (conserva contenido y grupos previos del destino; pulsa Espacio para DESTRUCTIVO)".to_string()
+            },
+        ],
+        Lang::En => [
+            format!(
+                "[{}] 1. Clone Associated Groups (Owners/Members/Visitors), Custom Groups & Members",
+                if app.clone_include_groups { "x" } else { " " }
+            ),
+            format!(
+                "[{}] 2. Clone Libraries & Server-Side Copy Folders/Files (preserving version history)",
+                if app.clone_include_files { "x" } else { " " }
+            ),
+            format!(
+                "[{}] 3. Replicate Unique Folder Permissions (Broken Inheritance top-down)",
+                if app.clone_include_unique_perms { "x" } else { " " }
+            ),
+            format!(
+                "[{}] 4. Overwrite existing files at target",
+                if app.clone_overwrite { "x" } else { " " }
+            ),
+            if app.clone_destructive {
+                "[x] 5. DESTRUCTIVE MODE: DELETE existing libraries, folders, files, groups & users at target before cloning".to_string()
+            } else {
+                "[ ] 5. Clone mode: ADDITIVE (keeps existing target content & groups; press Space for DESTRUCTIVE)".to_string()
+            },
+        ],
+    };
 
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Sitio ORIGEN  (Source): ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                lang.tr("  Sitio ORIGEN  (Source): ", "  SOURCE Site: "),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(src_display, Style::default().fg(Color::Yellow)),
         ]),
         Line::from(vec![
-            Span::styled("  Sitio DESTINO (Target): ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                lang.tr("  Sitio DESTINO (Target): ", "  TARGET Site: "),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(target_url, Style::default().fg(Color::White)),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "  Opciones de Clonado (Usa ↑/↓ y Espacio para marcar/desmarcar):",
+            lang.tr(
+                "  Opciones de Clonado (Usa ↑/↓ y Espacio para marcar/desmarcar):",
+                "  Clone Options (Use ↑/↓ and Space to toggle):",
+            ),
             Style::default().fg(Color::Cyan),
         )),
         Line::from(""),
@@ -940,10 +1091,20 @@ fn draw_tab_clone_site(f: &mut Frame<'_>, app: &App, area: Rect) {
 
     for (idx, opt_text) in options.iter().enumerate() {
         let is_sel = idx == app.clone_selected_option;
-        let style = if is_sel {
+        let is_destructive_opt = idx == 4 && app.clone_destructive;
+        let style = if is_sel && is_destructive_opt {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD)
+        } else if is_sel {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if is_destructive_opt {
+            Style::default()
+                .fg(Color::LightRed)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
@@ -954,22 +1115,58 @@ fn draw_tab_clone_site(f: &mut Frame<'_>, app: &App, area: Rect) {
         ]));
     }
 
+    if app.clone_destructive {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            lang.tr(
+                "  ⚠⚠⚠ ATENCIÓN: MODO DESTRUCTIVO ACTIVADO ⚠⚠⚠",
+                "  ⚠⚠⚠ WARNING: DESTRUCTIVE MODE ENABLED ⚠⚠⚠",
+            ),
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            lang.tr(
+                "  Se ELIMINARÁN bibliotecas, carpetas, archivos, grupos y usuarios existentes en el sitio DESTINO antes de clonar.",
+                "  Existing libraries, folders, files, groups and users on the TARGET site will be DELETED before cloning.",
+            ),
+            Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            lang.tr(
+                "  Las eliminaciones destructivas NO son reversibles mediante Rollback en SQLite.",
+                "  Destructive deletions are NOT reversible via SQLite Rollback.",
+            ),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(
             "  [s] ",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("Indicar URL del Sitio Origen   "),
+        Span::raw(lang.tr("Indicar URL del Sitio Origen   ", "Set Source Site URL   ")),
         Span::styled(
             "  [Enter] ",
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("Generar Plan de Clonado en Cola Staging (para revisar y Aplicar con 'A')"),
+        Span::raw(lang.tr(
+            "Generar Plan de Clonado en Cola Staging (para revisar y Aplicar con 'A')",
+            "Generate Clone Plan in Staging Queue (review and Apply with 'A')",
+        )),
     ]));
 
     let block = Block::default()
-        .title(" Fase 3: Clonado Completo de un Sitio SharePoint en otro ")
+        .title(lang.tr(
+            " Fase 3: Clonado Completo de un Sitio SharePoint en otro ",
+            " Phase 3: Full SharePoint Site Cloning ",
+        ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan));
@@ -989,7 +1186,10 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
     // Left: Staging Queue (Pending operations before clicking Apply)
     let staging_items: Vec<ListItem<'_>> = if app.staging.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "  (Cola de Staging vacía — añade/quita usuarios o importa un CSV/JSON)",
+            app.lang.tr(
+                "  (Cola de Staging vacía — añade/quita usuarios o importa un CSV/JSON)",
+                "  (Staging queue empty — add/remove users or import a CSV/JSON)",
+            ),
             Style::default().fg(Color::DarkGray),
         )))]
     } else {
@@ -999,7 +1199,7 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
             .enumerate()
             .map(|(idx, op)| {
                 let is_sel = idx == app.selected_staging_idx && left_focused;
-                let label = op.label();
+                let label = op.label_for(app.lang);
                 let fg = if label.starts_with("[+]")
                     || label.starts_with("[+Rol]")
                     || label.starts_with("[+Sync]")
@@ -1009,6 +1209,7 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
                 } else if label.starts_with("[-]")
                     || label.starts_with("[-Sync]")
                     || label.starts_with("[-AtajoOD]")
+                    || label.starts_with("[-DEL")
                 {
                     Color::LightRed
                 } else {
@@ -1031,10 +1232,16 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
     };
 
     let staging_block = Block::default()
-        .title(format!(
-            " Cola Staging ({}) [A: Aplicar Cambios | d: Quitar ítem | X: Vaciar] ",
-            app.staging.len()
-        ))
+        .title(match app.lang {
+            Lang::Es => format!(
+                " Cola Staging ({}) [A: Aplicar Cambios | d: Quitar ítem | X: Vaciar] ",
+                app.staging.len()
+            ),
+            Lang::En => format!(
+                " Staging Queue ({}) [A: Apply Changes | d: Remove item | X: Clear] ",
+                app.staging.len()
+            ),
+        })
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if left_focused {
@@ -1099,7 +1306,12 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
         ],
     )
     .header(
-        Row::new(vec!["ID", "Fecha (UTC)", "Estado", "Resumen de Acciones"])
+        Row::new(vec![
+            "ID",
+            app.lang.tr("Fecha (UTC)", "Date (UTC)"),
+            app.lang.tr("Estado", "Status"),
+            app.lang.tr("Resumen de Acciones", "Actions Summary"),
+        ])
             .style(
                 Style::default()
                     .fg(Color::Cyan)
@@ -1109,10 +1321,16 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
     )
     .block(
         Block::default()
-            .title(format!(
-                " Historial de Transacciones SQLite ({}) [R: Revertir Transacción] ",
-                app.transactions.len()
-            ))
+            .title(match app.lang {
+                Lang::Es => format!(
+                    " Historial de Transacciones SQLite ({}) [R: Revertir Transacción] ",
+                    app.transactions.len()
+                ),
+                Lang::En => format!(
+                    " SQLite Transaction History ({}) [R: Revert Transaction] ",
+                    app.transactions.len()
+                ),
+            })
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if right_focused {
@@ -1154,7 +1372,10 @@ fn draw_tab_staging_and_history(f: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let ops_block = Block::default()
-        .title(" Operaciones Atómicas de la Transacción Seleccionada [r: Revertir Operación] ")
+        .title(app.lang.tr(
+            " Operaciones Atómicas de la Transacción Seleccionada [r: Revertir Operación] ",
+            " Atomic Operations of Selected Transaction [r: Revert Operation] ",
+        ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray));
@@ -1173,7 +1394,7 @@ fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
     let status_line = if let Some(ref busy) = app.busy_message {
         Line::from(vec![
             Span::styled(
-                " ⏳ PROCESANDO: ",
+                app.lang.tr(" ⏳ PROCESANDO: ", " ⏳ PROCESSING: "),
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Yellow)
@@ -1207,12 +1428,16 @@ fn draw_footer(f: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn context_help_keys(app: &App) -> &'static str {
-    match app.screen {
-        Screen::Auth => "Escribe tu correo M365 | Enter: Login Navegador | F2 / Ctrl+D: Device Code | Esc: Salir",
-        Screen::SiteSelector => {
+    match (app.screen, app.lang) {
+        (Screen::Auth, Lang::Es) => "Escribe tu correo M365 | Enter: Login Navegador | F2 / Ctrl+D: Device Code | Esc: Salir",
+        (Screen::Auth, Lang::En) => "Type your M365 email | Enter: Browser Sign-In | F2 / Ctrl+D: Device Code | Esc: Quit",
+        (Screen::SiteSelector, Lang::Es) => {
             "↑/↓: Mover | Enter: Abrir Sitio | /: Filtrar | s: Buscar en Tenant | u: URL Manual | c: Fijar Origen Clon | r: Recargar | ?: Ayuda | q: Salir"
         }
-        Screen::SiteWorkspace => match app.tab {
+        (Screen::SiteSelector, Lang::En) => {
+            "↑/↓: Move | Enter: Open Site | /: Filter | s: Search Tenant | u: Manual URL | c: Set Clone Source | r: Reload | ?: Help | q: Quit"
+        }
+        (Screen::SiteWorkspace, Lang::Es) => match app.tab {
             WorkspaceTab::GroupsAndUsers => {
                 "Tab/←/→: Cambiar Panel | a: Asignar Usuario | d: Remover Usuario | g: Crear Grupo | O: Menú Sync/OneDrive Sitio | A: APLICAR Staging | H: Historial/Rollback | Esc: Sitios"
             }
@@ -1226,47 +1451,94 @@ fn context_help_keys(app: &App) -> &'static str {
                 "Tab/←/→: Staging vs Historial | A: APLICAR Staging | R: Revertir Transacción | r: Revertir Op | d: Quitar de Staging | X: Vaciar Staging"
             }
         },
+        (Screen::SiteWorkspace, Lang::En) => match app.tab {
+            WorkspaceTab::GroupsAndUsers => {
+                "Tab/←/→: Switch Pane | a: Add User | d: Remove User | g: New Group | O: Site Sync/OneDrive Menu | A: APPLY Staging | H: History/Rollback | Esc: Sites"
+            }
+            WorkspaceTab::LibrariesAndFolders => {
+                "Tab/←/→: Pane | o: Lib Sync/OneDrive Menu | O: Site+Libs Menu | n: Folder | b: Lib | p: Permission | i/e: CSV/JSON | A: APPLY"
+            }
+            WorkspaceTab::CloneSite => {
+                "↑/↓: Move Option | Space: Toggle | s: Set Source URL | Enter: Generate Staging Plan | A: APPLY | Esc: Sites"
+            }
+            WorkspaceTab::StagingAndHistory => {
+                "Tab/←/→: Staging vs History | A: APPLY Staging | R: Revert Transaction | r: Revert Op | d: Remove Item | X: Clear Staging"
+            }
+        },
     }
 }
 
 fn draw_modal(f: &mut Frame<'_>, app: &App) {
+    let lang = app.lang;
     match &app.modal {
         Modal::None => {}
         Modal::Help => {
             let area = centered_rect(76, 82, f.area());
             f.render_widget(Clear, area);
-            let lines = vec![
-                Line::from(Span::styled(
-                    "Atajos de Teclado de SPOIberia",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from("• Selector de Sitios:"),
-                Line::from("  Enter       Abrir sitio SharePoint seleccionado"),
-                Line::from("  /           Filtrar lista local de sitios"),
-                Line::from("  s           Buscar sitios en todo el tenant M365 y verificar permisos"),
-                Line::from("  u           Abrir un sitio introduciendo su URL manualmente"),
-                Line::from("  c           Marcar sitio seleccionado como Origen para Clonado (Fase 3)"),
-                Line::from(""),
-                Line::from("• Módulo 1 — Grupos y Usuarios (Pestaña 1):"),
-                Line::from("  a           Buscar usuario en el directorio M365 y encolar alta en el grupo"),
-                Line::from("  d / Supr    Encolar baja del usuario seleccionado del grupo"),
-                Line::from("  g           Crear nuevo grupo de SharePoint en el sitio"),
-                Line::from(""),
-                Line::from("• Módulo 2 — Bibliotecas, Carpetas y Sync Offline (Pestaña 2):"),
-                Line::from("  n / b       Crear nueva carpeta (n) o nueva biblioteca (b)"),
-                Line::from("  o / O       Abrir menú Sync SharePoint / Accesos OneDrive en biblioteca (o) o sitio+bibs (O)"),
-                Line::from("  p           Romper herencia y asignar rol (Read/Contribute/Edit/Full Control) a un grupo"),
-                Line::from("  i / e       Importar matriz de carpetas/permisos CSV/JSON (i) o exportar (e)"),
-                Line::from(""),
-                Line::from("• Staging y Transacciones SQLite (Pestaña 4 / Global):"),
-                Line::from("  A           APLICAR todos los cambios en Staging y registrar transacción en SQLite"),
-                Line::from("  R / r       Revertir (Rollback) una transacción completa (R) o una operación (r)"),
-                Line::from(""),
-                Line::from(Span::styled("Pulsa Esc o ? para cerrar esta ayuda", Style::default().fg(Color::Yellow))),
-            ];
+            let lines = match lang {
+                Lang::Es => vec![
+                    Line::from(Span::styled(
+                        "Atajos de Teclado de SPOIberia",
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                    Line::from("• Selector de Sitios:"),
+                    Line::from("  Enter       Abrir sitio SharePoint seleccionado"),
+                    Line::from("  /           Filtrar lista local de sitios"),
+                    Line::from("  s           Buscar sitios en todo el tenant M365 y verificar permisos"),
+                    Line::from("  u           Abrir un sitio introduciendo su URL manualmente"),
+                    Line::from("  c           Marcar sitio seleccionado como Origen para Clonado (Fase 3)"),
+                    Line::from(""),
+                    Line::from("• Módulo 1 — Grupos y Usuarios (Pestaña 1):"),
+                    Line::from("  a           Buscar usuario en el directorio M365 y encolar alta en el grupo"),
+                    Line::from("  d / Supr    Encolar baja del usuario seleccionado del grupo"),
+                    Line::from("  g           Crear nuevo grupo de SharePoint en el sitio"),
+                    Line::from(""),
+                    Line::from("• Módulo 2 — Bibliotecas, Carpetas y Sync Offline (Pestaña 2):"),
+                    Line::from("  n / b       Crear nueva carpeta (n) o nueva biblioteca (b)"),
+                    Line::from("  o / O       Abrir menú Sync SharePoint / Accesos OneDrive en biblioteca (o) o sitio+bibs (O)"),
+                    Line::from("  p           Romper herencia y asignar rol (Read/Contribute/Edit/Full Control) a un grupo"),
+                    Line::from("  i / e       Importar matriz de carpetas/permisos CSV/JSON (i) o exportar (e)"),
+                    Line::from(""),
+                    Line::from("• Staging y Transacciones SQLite (Pestaña 4 / Global):"),
+                    Line::from("  A           APLICAR todos los cambios en Staging y registrar transacción en SQLite"),
+                    Line::from("  R / r       Revertir (Rollback) una transacción completa (R) o una operación (r)"),
+                    Line::from(""),
+                    Line::from(Span::styled("Pulsa Esc o ? para cerrar esta ayuda", Style::default().fg(Color::Yellow))),
+                ],
+                Lang::En => vec![
+                    Line::from(Span::styled(
+                        "SPOIberia Keyboard Shortcuts",
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                    Line::from("• Site Selector:"),
+                    Line::from("  Enter       Open selected SharePoint site"),
+                    Line::from("  /           Filter local site list"),
+                    Line::from("  s           Search sites across M365 tenant and verify permissions"),
+                    Line::from("  u           Open a site by entering its URL manually"),
+                    Line::from("  c           Mark selected site as Clone Source (Phase 3)"),
+                    Line::from(""),
+                    Line::from("• Module 1 — Groups & Users (Tab 1):"),
+                    Line::from("  a           Search user in M365 directory and queue addition to group"),
+                    Line::from("  d / Del     Queue removal of selected user from group"),
+                    Line::from("  g           Create new SharePoint group on site"),
+                    Line::from(""),
+                    Line::from("• Module 2 — Libraries, Folders & Offline Sync (Tab 2):"),
+                    Line::from("  n / b       Create new folder (n) or new document library (b)"),
+                    Line::from("  o / O       Open SharePoint Sync / OneDrive Shortcuts menu for library (o) or site+libs (O)"),
+                    Line::from("  p           Break inheritance and grant role (Read/Contribute/Edit/Full Control) to a group"),
+                    Line::from("  i / e       Import folders/permissions CSV/JSON matrix (i) or export (e)"),
+                    Line::from(""),
+                    Line::from("• Staging & SQLite Transactions (Tab 4 / Global):"),
+                    Line::from("  A           APPLY all Staging changes and record transaction in SQLite"),
+                    Line::from("  R / r       Revert (Rollback) full transaction (R) or single operation (r)"),
+                    Line::from(""),
+                    Line::from(Span::styled("Press Esc or ? to close this help", Style::default().fg(Color::Yellow))),
+                ],
+            };
             let block = Block::default()
-                .title(" Ayuda de SPOIberia ")
+                .title(lang.tr(" Ayuda de SPOIberia ", " SPOIberia Help "))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Yellow));
@@ -1292,7 +1564,10 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    " [Enter] Confirmar   [Esc] Cancelar",
+                    lang.tr(
+                        " [Enter] Confirmar   [Esc] Cancelar",
+                        " [Enter] Confirm   [Esc] Cancel",
+                    ),
                     Style::default().fg(Color::Gray),
                 )),
             ];
@@ -1323,17 +1598,33 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 ])
                 .split(area);
 
-            let status = if *searching { " (Buscando...)" } else { "" };
+            let status = if *searching {
+                lang.tr(" (Buscando...)", " (Searching...)")
+            } else {
+                ""
+            };
             let search_block = Block::default()
-                .title(format!(
-                    " Asignar Usuario(s) al Grupo '{}'{} ",
-                    group_title, status
-                ))
+                .title(match lang {
+                    Lang::Es => format!(
+                        " Asignar Usuario(s) al Grupo '{}'{} ",
+                        group_title, status
+                    ),
+                    Lang::En => format!(
+                        " Add User(s) to Group '{}'{} ",
+                        group_title, status
+                    ),
+                })
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::LightGreen));
             let search_line = Line::from(vec![
-                Span::styled(" Buscar en directorio (o escribe email/UPN): ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    lang.tr(
+                        " Buscar en directorio (o escribe email/UPN): ",
+                        " Search directory (or type email/UPN): ",
+                    ),
+                    Style::default().fg(Color::Cyan),
+                ),
                 Span::styled(
                     format!("{}█", query),
                     Style::default()
@@ -1375,11 +1666,18 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 .collect();
 
             let list_block = Block::default()
-                .title(format!(
-                    " Resultados del Directorio ({}) — Seleccionados: {} ",
-                    results.len(),
-                    marked_identifiers.len()
-                ))
+                .title(match lang {
+                    Lang::Es => format!(
+                        " Resultados del Directorio ({}) — Seleccionados: {} ",
+                        results.len(),
+                        marked_identifiers.len()
+                    ),
+                    Lang::En => format!(
+                        " Directory Results ({}) — Selected: {} ",
+                        results.len(),
+                        marked_identifiers.len()
+                    ),
+                })
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan));
@@ -1397,9 +1695,10 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded);
             f.render_widget(
-                Paragraph::new(
+                Paragraph::new(lang.tr(
                     " [↑/↓] Mover | [Tab] Marcar varios | [Ctrl+S] Buscar ahora | [Enter] Encolar en Staging | [Esc] Cancelar",
-                )
+                    " [↑/↓] Move | [Tab] Multi-select | [Ctrl+S] Search now | [Enter] Queue in Staging | [Esc] Cancel",
+                ))
                 .block(help_block),
                 chunks[2],
             );
@@ -1439,89 +1738,197 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 Style::default().fg(Color::White)
             };
 
+            let yes = lang.tr("Sí", "Yes");
+            let no = "No";
             let lines = vec![
                 Line::from(""),
-                Line::from(format!(
-                    "  Carpeta destino: {}/{}",
-                    library_title, relative_folder_path
-                )),
+                Line::from(match lang {
+                    Lang::Es => format!(
+                        "  Carpeta destino: {}/{}",
+                        library_title, relative_folder_path
+                    ),
+                    Lang::En => format!(
+                        "  Target folder: {}/{}",
+                        library_title, relative_folder_path
+                    ),
+                }),
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("  1. Grupo SharePoint (se creará si no existe: {}): {}█", create_group_if_missing, group_name),
+                    match lang {
+                        Lang::Es => format!(
+                            "  1. Grupo SharePoint (se creará si no existe: {}): {}█",
+                            create_group_if_missing, group_name
+                        ),
+                        Lang::En => format!(
+                            "  1. SharePoint Group (auto-create if missing: {}): {}█",
+                            create_group_if_missing, group_name
+                        ),
+                    },
                     f0_style,
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("  2. Nivel de Permiso (←/→ para cambiar): < {} >", role_name),
+                    match lang {
+                        Lang::Es => format!("  2. Nivel de Permiso (←/→ para cambiar): < {} >", role_name),
+                        Lang::En => format!("  2. Permission Level (←/→ to change): < {} >", role_name),
+                    },
                     f1_style,
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("  3. CopyParentRoles al romper herencia (Espacio): [{}]", if *copy_parent_roles { "Sí" } else { "No" }),
+                    match lang {
+                        Lang::Es => format!(
+                            "  3. CopyParentRoles al romper herencia (Espacio): [{}]",
+                            if *copy_parent_roles { yes } else { no }
+                        ),
+                        Lang::En => format!(
+                            "  3. CopyParentRoles on break inheritance (Space): [{}]",
+                            if *copy_parent_roles { yes } else { no }
+                        ),
+                    },
                     f2_style,
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("  4. ClearSubscopes al romper herencia (Espacio):  [{}]", if *clear_subscopes { "Sí" } else { "No" }),
+                    match lang {
+                        Lang::Es => format!(
+                            "  4. ClearSubscopes al romper herencia (Espacio):  [{}]",
+                            if *clear_subscopes { yes } else { no }
+                        ),
+                        Lang::En => format!(
+                            "  4. ClearSubscopes on break inheritance (Space):  [{}]",
+                            if *clear_subscopes { yes } else { no }
+                        ),
+                    },
                     f3_style,
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "  [Tab / ↑ / ↓] Cambiar campo | [Enter] Encolar en Staging | [Esc] Cancelar",
+                    lang.tr(
+                        "  [Tab / ↑ / ↓] Cambiar campo | [Enter] Encolar en Staging | [Esc] Cancelar",
+                        "  [Tab / ↑ / ↓] Switch field | [Enter] Queue in Staging | [Esc] Cancel",
+                    ),
                     Style::default().fg(Color::Gray),
                 )),
             ];
 
             let block = Block::default()
-                .title(" Asignar Permiso Único a Carpeta ")
+                .title(lang.tr(
+                    " Asignar Permiso Único a Carpeta ",
+                    " Grant Unique Folder Permission ",
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Yellow));
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
         Modal::ConfirmApplyStaging { note } => {
-            let area = centered_rect(72, 60, f.area());
+            let destructive_cnt = app.staging.destructive_ops_count();
+            let is_destructive = destructive_cnt > 0;
+            let area = centered_rect(76, if is_destructive { 66 } else { 60 }, f.area());
             f.render_widget(Clear, area);
-            let mut lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!(
+            let mut lines = vec![Line::from("")];
+            if is_destructive {
+                lines.push(Line::from(Span::styled(
+                    match lang {
+                        Lang::Es => format!(
+                            "  ⚠⚠⚠ ALERTA: {} operación(es) DESTRUCTIVA(S) borrarán datos/grupos en SharePoint (NO reversible) ⚠⚠⚠",
+                            destructive_cnt
+                        ),
+                        Lang::En => format!(
+                            "  ⚠⚠⚠ ALERT: {} DESTRUCTIVE operation(s) will delete data/groups in SharePoint (NOT reversible) ⚠⚠⚠",
+                            destructive_cnt
+                        ),
+                    },
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::Red)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                match lang {
+                    Lang::Es => format!(
                         "  Se van a ejecutar {} operación(es) en SharePoint Online y registrar la transacción en SQLite:",
                         app.staging.len()
                     ),
-                    Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(format!("  Resumen: {}", app.staging.build_summary())),
-                Line::from(""),
-            ];
+                    Lang::En => format!(
+                        "  About to execute {} operation(s) in SharePoint Online and record transaction in SQLite:",
+                        app.staging.len()
+                    ),
+                },
+                Style::default()
+                    .fg(if is_destructive {
+                        Color::LightRed
+                    } else {
+                        Color::LightGreen
+                    })
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(match lang {
+                Lang::Es => format!("  Resumen: {}", app.staging.build_summary_for(lang)),
+                Lang::En => format!("  Summary: {}", app.staging.build_summary_for(lang)),
+            }));
+            lines.push(Line::from(""));
 
             for (i, op) in app.staging.ops.iter().take(8).enumerate() {
-                lines.push(Line::from(format!("   {:>2}. {}", i + 1, op.label())));
+                let op_style = if op.is_destructive() {
+                    Style::default()
+                        .fg(Color::LightRed)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("   {:>2}. {}", i + 1, op.label_for(lang)),
+                    op_style,
+                )));
             }
             if app.staging.len() > 8 {
-                lines.push(Line::from(format!(
-                    "   ... y {} operación(es) más",
-                    app.staging.len() - 8
-                )));
+                lines.push(Line::from(match lang {
+                    Lang::Es => format!("   ... y {} operación(es) más", app.staging.len() - 8),
+                    Lang::En => format!("   ... and {} more operation(s)", app.staging.len() - 8),
+                }));
             }
 
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("  Nota / Motivo (opcional): ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    lang.tr("  Nota / Motivo (opcional): ", "  Note / Reason (optional): "),
+                    Style::default().fg(Color::Cyan),
+                ),
                 Span::styled(format!("{}█", note), Style::default().fg(Color::White)),
             ]));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "  [Enter] APLICAR CAMBIOS AHORA   [Esc] Cancelar",
+                lang.tr(
+                    "  [Enter] APLICAR CAMBIOS AHORA   [Esc] Cancelar",
+                    "  [Enter] APPLY CHANGES NOW   [Esc] Cancel",
+                ),
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             )));
 
             let block = Block::default()
-                .title(" Confirmar Aplicación de Cambios (Transacción SQLite) ")
+                .title(if is_destructive {
+                    lang.tr(
+                        " ⚠ CONFIRMAR APLICACIÓN DESTRUCTIVA (BORRARÁ DATOS EN DESTINO) ",
+                        " ⚠ CONFIRM DESTRUCTIVE APPLY (WILL DELETE TARGET DATA) ",
+                    )
+                } else {
+                    lang.tr(
+                        " Confirmar Aplicación de Cambios (Transacción SQLite) ",
+                        " Confirm Apply Changes (SQLite Transaction) ",
+                    )
+                })
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::LightGreen));
-            f.render_widget(Paragraph::new(lines).block(block), area);
+                .border_style(Style::default().fg(if is_destructive {
+                    Color::LightRed
+                } else {
+                    Color::LightGreen
+                }));
+            f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
         }
         Modal::ConfirmRevertTransaction {
             tx_id,
@@ -1530,26 +1937,40 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
         } => {
             let area = centered_rect(65, 35, f.area());
             f.render_widget(Clear, area);
-            let target_desc = match only_op_id {
-                Some(op_id) => format!("la operación #{} de la transacción #{}", op_id, tx_id),
-                None => format!("TODA la transacción #{} (en orden inverso LIFO)", tx_id),
+            let target_desc = match (only_op_id, lang) {
+                (Some(op_id), Lang::Es) => format!("la operación #{} de la transacción #{}", op_id, tx_id),
+                (Some(op_id), Lang::En) => format!("operation #{} of transaction #{}", op_id, tx_id),
+                (None, Lang::Es) => format!("TODA la transacción #{} (en orden inverso LIFO)", tx_id),
+                (None, Lang::En) => format!("ENTIRE transaction #{} (in reverse LIFO order)", tx_id),
             };
             let lines = vec![
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("  ¿Seguro que deseas REVERTIR (Rollback) {}?", target_desc),
+                    match lang {
+                        Lang::Es => format!("  ¿Seguro que deseas REVERTIR (Rollback) {}?", target_desc),
+                        Lang::En => format!("  Are you sure you want to REVERT (Rollback) {}?", target_desc),
+                    },
                     Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
-                Line::from(format!("  Detalle: {}", summary)),
+                Line::from(match lang {
+                    Lang::Es => format!("  Detalle: {}", summary),
+                    Lang::En => format!("  Detail: {}", summary),
+                }),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "  [Enter / y] Sí, Revertir en SharePoint   [Esc / n] Cancelar",
+                    lang.tr(
+                        "  [Enter / y / s] Sí, Revertir en SharePoint   [Esc / n] Cancelar",
+                        "  [Enter / y] Yes, Revert in SharePoint   [Esc / n] Cancel",
+                    ),
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 )),
             ];
             let block = Block::default()
-                .title(" Confirmar Reversión (Rollback) ")
+                .title(lang.tr(
+                    " Confirmar Reversión (Rollback) ",
+                    " Confirm Revert (Rollback) ",
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::LightRed));
@@ -1589,25 +2010,47 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
 
                     let sync_txt = format!(
                         "{}{} -> {}",
-                        if sync_eff { "Bloqueada" } else { "Activa" },
+                        if sync_eff {
+                            lang.tr("Bloqueada", "Blocked")
+                        } else {
+                            lang.tr("Activa", "Active")
+                        },
                         sync_star,
-                        if sync_eff { "Permitir" } else { "Bloquear" }
+                        if sync_eff {
+                            lang.tr("Permitir", "Allow")
+                        } else {
+                            lang.tr("Bloquear", "Block")
+                        }
                     );
                     let od_txt = format!(
                         "{}{} -> {}",
-                        if od_eff { "Oculto" } else { "Visible" },
+                        if od_eff {
+                            lang.tr("Oculto", "Hidden")
+                        } else {
+                            lang.tr("Visible", "Visible")
+                        },
                         od_star,
-                        if od_eff { "Mostrar" } else { "Ocultar" }
+                        if od_eff {
+                            lang.tr("Mostrar", "Show")
+                        } else {
+                            lang.tr("Ocultar", "Hide")
+                        }
                     );
                     let both_blocked = sync_eff && od_eff;
                     let comb_txt = if both_blocked {
-                        "Permitir ambos".to_string()
+                        lang.tr("Permitir ambos", "Allow both").to_string()
                     } else {
-                        "Bloquear ambos".to_string()
+                        lang.tr("Bloquear ambos", "Block both").to_string()
                     };
                     (
-                        format!(" Control Sync / Accesos OneDrive — Biblioteca '{}' ", lib_name),
-                        format!("Ámbito: Biblioteca '{}'", lib_name),
+                        match lang {
+                            Lang::Es => format!(" Control Sync / Accesos OneDrive — Biblioteca '{}' ", lib_name),
+                            Lang::En => format!(" Sync / OneDrive Shortcuts Control — Library '{}' ", lib_name),
+                        },
+                        match lang {
+                            Lang::Es => format!("Ámbito: Biblioteca '{}'", lib_name),
+                            Lang::En => format!("Scope: Library '{}'", lib_name),
+                        },
                         sync_txt,
                         od_txt,
                         comb_txt,
@@ -1636,30 +2079,56 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
 
                     let sync_txt = format!(
                         "{}{} -> {}",
-                        if sync_eff { "Bloqueada" } else { "Activa" },
+                        if sync_eff {
+                            lang.tr("Bloqueada", "Blocked")
+                        } else {
+                            lang.tr("Activa", "Active")
+                        },
                         sync_star,
-                        if sync_eff { "Permitir" } else { "Bloquear" }
+                        if sync_eff {
+                            lang.tr("Permitir", "Allow")
+                        } else {
+                            lang.tr("Bloquear", "Block")
+                        }
                     );
                     let od_txt = format!(
                         "{}{} -> {}",
-                        if od_eff { "Ocultos" } else { "Visibles" },
+                        if od_eff {
+                            lang.tr("Ocultos", "Hidden")
+                        } else {
+                            lang.tr("Visibles", "Visible")
+                        },
                         od_star,
-                        if od_eff { "Mostrar" } else { "Ocultar" }
+                        if od_eff {
+                            lang.tr("Mostrar", "Show")
+                        } else {
+                            lang.tr("Ocultar", "Hide")
+                        }
                     );
                     let both_blocked = sync_eff
                         && (app.libraries.is_empty() || od_eff);
                     let comb_txt = if both_blocked {
-                        "Permitir ambos".to_string()
+                        lang.tr("Permitir ambos", "Allow both").to_string()
                     } else {
-                        "Bloquear ambos".to_string()
+                        lang.tr("Bloquear ambos", "Block both").to_string()
                     };
                     (
-                        format!(" Control Sync / Accesos OneDrive — Sitio '{}' ", site_name),
-                        format!(
-                            "Ámbito: Sitio '{}' y sus {} biblioteca(s)",
-                            site_name,
-                            app.libraries.len()
-                        ),
+                        match lang {
+                            Lang::Es => format!(" Control Sync / Accesos OneDrive — Sitio '{}' ", site_name),
+                            Lang::En => format!(" Sync / OneDrive Shortcuts Control — Site '{}' ", site_name),
+                        },
+                        match lang {
+                            Lang::Es => format!(
+                                "Ámbito: Sitio '{}' y sus {} biblioteca(s)",
+                                site_name,
+                                app.libraries.len()
+                            ),
+                            Lang::En => format!(
+                                "Scope: Site '{}' and its {} library/libraries",
+                                site_name,
+                                app.libraries.len()
+                            ),
+                        },
                         sync_txt,
                         od_txt,
                         comb_txt,
@@ -1667,20 +2136,36 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 }
             };
 
-            let options = [
-                format!(
-                    "  [1] Sincronización SharePoint (ExcludeFromOfflineClient)   [{}]",
-                    sync_state
-                ),
-                format!(
-                    "  [2] Accesos directos a OneDrive (Botón barra de comandos)  [{}]",
-                    od_state
-                ),
-                format!(
-                    "  [3] Ambos (Sincronización SharePoint + Accesos OneDrive)   [{}]",
-                    combined_state
-                ),
-            ];
+            let options = match lang {
+                Lang::Es => [
+                    format!(
+                        "  [1] Sincronización SharePoint (ExcludeFromOfflineClient)   [{}]",
+                        sync_state
+                    ),
+                    format!(
+                        "  [2] Accesos directos a OneDrive (Botón barra de comandos)  [{}]",
+                        od_state
+                    ),
+                    format!(
+                        "  [3] Ambos (Sincronización SharePoint + Accesos OneDrive)   [{}]",
+                        combined_state
+                    ),
+                ],
+                Lang::En => [
+                    format!(
+                        "  [1] SharePoint Sync (ExcludeFromOfflineClient)             [{}]",
+                        sync_state
+                    ),
+                    format!(
+                        "  [2] OneDrive Shortcuts (Command bar button)                [{}]",
+                        od_state
+                    ),
+                    format!(
+                        "  [3] Both (SharePoint Sync + OneDrive Shortcuts)            [{}]",
+                        combined_state
+                    ),
+                ],
+            };
 
             let mut lines = vec![
                 Line::from(""),
@@ -1688,7 +2173,10 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                     format!("  {}", scope_desc),
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 )),
-                Line::from("  Selecciona qué subopción quieres alternar en Staging:"),
+                Line::from(lang.tr(
+                    "  Selecciona qué subopción quieres alternar en Staging:",
+                    "  Select which suboption to toggle in Staging:",
+                )),
                 Line::from(""),
             ];
 
@@ -1707,7 +2195,10 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
             lines.push(Line::from(""));
 
             lines.push(Line::from(Span::styled(
-                "  [↑/↓] Mover | [Enter / 1 / 2 / 3] Encolar en Staging | [Esc] Cancelar",
+                lang.tr(
+                    "  [↑/↓] Mover | [Enter / 1 / 2 / 3] Encolar en Staging | [Esc] Cancelar",
+                    "  [↑/↓] Move | [Enter / 1 / 2 / 3] Queue in Staging | [Esc] Cancel",
+                ),
                 Style::default().fg(Color::Gray),
             )));
 
@@ -1716,6 +2207,96 @@ fn draw_modal(f: &mut Frame<'_>, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan));
+            f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
+        }
+        Modal::ConfirmDestructiveClone {
+            source_url,
+            target_url,
+            typed_confirm,
+        } => {
+            let area = centered_rect(78, 56, f.area());
+            f.render_widget(Clear, area);
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    lang.tr(
+                        "  ⚠⚠⚠ ADVERTENCIA: CLONADO EN MODO DESTRUCTIVO ⚠⚠⚠",
+                        "  ⚠⚠⚠ WARNING: DESTRUCTIVE CLONE MODE ⚠⚠⚠",
+                    ),
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::Red)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(match lang {
+                    Lang::Es => format!("  Sitio ORIGEN:  {}", source_url),
+                    Lang::En => format!("  SOURCE Site: {}", source_url),
+                }),
+                Line::from(Span::styled(
+                    match lang {
+                        Lang::Es => format!("  Sitio DESTINO: {}", target_url),
+                        Lang::En => format!("  TARGET Site: {}", target_url),
+                    },
+                    Style::default()
+                        .fg(Color::LightRed)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(lang.tr(
+                    "  Al aplicar el plan en Staging se ELIMINARÁN en el sitio DESTINO:",
+                    "  When applying the Staging plan, the following will be DELETED at TARGET:",
+                )),
+                Line::from(lang.tr(
+                    "    • Bibliotecas no predeterminadas, carpetas y archivos actuales",
+                    "    • Non-default libraries, existing folders and files",
+                )),
+                Line::from(lang.tr(
+                    "    • Grupos personalizados no presentes en origen y miembros actuales",
+                    "    • Custom groups missing in source and current group members",
+                )),
+                Line::from(Span::styled(
+                    lang.tr(
+                        "  Estas eliminaciones NO son reversibles mediante Rollback en SQLite.",
+                        "  These deletions are NOT reversible via SQLite Rollback.",
+                    ),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        lang.tr(
+                            "  Escribe BORRAR para generar el plan en Staging: ",
+                            "  Type DELETE to generate the Staging plan: ",
+                        ),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{}█", typed_confirm),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    lang.tr(
+                        "  [Enter] Generar plan en Staging   [Esc] Cancelar",
+                        "  [Enter] Generate Staging plan   [Esc] Cancel",
+                    ),
+                    Style::default().fg(Color::Gray),
+                )),
+            ];
+            let block = Block::default()
+                .title(lang.tr(
+                    " ⚠ CONFIRMAR CLONADO DESTRUCTIVO ⚠ ",
+                    " ⚠ CONFIRM DESTRUCTIVE CLONE ⚠ ",
+                ))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::LightRed));
             f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
         }
     }
@@ -1764,7 +2345,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let graph = GraphClient::new(auth.clone()).unwrap();
         let spo = SpoClient::new(auth.clone()).unwrap();
-        let app = App::new(auth, db, graph, spo);
+        let app = App::new(auth, db, graph, spo, Lang::Es);
         let _ = std::fs::remove_dir_all(&tmp_cfg);
         app
     }
@@ -1957,6 +2538,112 @@ mod tests {
         assert!(
             rendered_modal.contains("[3] Ambos"),
             "expected combined option in modal:\n{rendered_modal}"
+        );
+    }
+
+    #[test]
+    fn test_destructive_clone_ui_warnings_and_modal() {
+        use crate::models::StagingOp;
+
+        let mut app = make_test_app();
+        let site_url = "https://contoso.sharepoint.com/sites/Destino".to_string();
+        app.screen = Screen::SiteWorkspace;
+        app.tab = WorkspaceTab::CloneSite;
+        app.current_site = Some(SpoSite {
+            title: "Destino".to_string(),
+            url: site_url.clone(),
+            description: None,
+            role: SiteRole::SiteAdmin,
+            is_site_admin: true,
+        });
+        app.clone_source_url = "https://contoso.sharepoint.com/sites/Origen".to_string();
+        app.clone_destructive = true;
+
+        let backend = TestBackend::new(140, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let rendered_tab = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered_tab.contains("MODO DESTRUCTIVO ACTIVADO"),
+            "expected destructive mode warning banner in:\n{rendered_tab}"
+        );
+
+        app.modal = Modal::ConfirmDestructiveClone {
+            source_url: app.clone_source_url.clone(),
+            target_url: site_url.clone(),
+            typed_confirm: "BOR".to_string(),
+        };
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let rendered_confirm = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered_confirm.contains("CONFIRMAR CLONADO DESTRUCTIVO"),
+            "expected destructive clone modal in:\n{rendered_confirm}"
+        );
+        assert!(
+            rendered_confirm.contains("Escribe BORRAR"),
+            "expected BORRAR prompt in:\n{rendered_confirm}"
+        );
+
+        app.staging.push(StagingOp::DeleteLibrary {
+            site_url,
+            library_id: "lib-99".to_string(),
+            library_title: "Antigua".to_string(),
+        });
+        app.modal = Modal::ConfirmApplyStaging {
+            note: String::new(),
+        };
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let rendered_apply = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered_apply.contains("CONFIRMAR APLICACIÓN DESTRUCTIVA"),
+            "expected destructive apply warning in:\n{rendered_apply}"
+        );
+    }
+
+    #[test]
+    fn test_english_tui_rendering() {
+        let mut app = make_test_app();
+        app.lang = Lang::En;
+        app.screen = Screen::Auth;
+
+        let backend = TestBackend::new(140, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let auth_txt = buffer_text(terminal.backend().buffer());
+        assert!(
+            auth_txt.contains("Microsoft 365 Authentication"),
+            "expected English auth title:\n{auth_txt}"
+        );
+
+        app.screen = Screen::SiteWorkspace;
+        app.tab = WorkspaceTab::CloneSite;
+        app.current_site = Some(SpoSite {
+            title: "Target".to_string(),
+            url: "https://contoso.sharepoint.com/sites/Target".to_string(),
+            description: None,
+            role: SiteRole::SiteAdmin,
+            is_site_admin: true,
+        });
+        app.clone_destructive = true;
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let clone_txt = buffer_text(terminal.backend().buffer());
+        assert!(
+            clone_txt.contains("DESTRUCTIVE MODE ENABLED"),
+            "expected English destructive warning:\n{clone_txt}"
+        );
+
+        app.modal = Modal::ConfirmDestructiveClone {
+            source_url: "https://contoso.sharepoint.com/sites/Source".to_string(),
+            target_url: "https://contoso.sharepoint.com/sites/Target".to_string(),
+            typed_confirm: String::new(),
+        };
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+        let modal_txt = buffer_text(terminal.backend().buffer());
+        assert!(
+            modal_txt.contains("Type DELETE to generate the Staging plan"),
+            "expected English DELETE prompt:\n{modal_txt}"
         );
     }
 }

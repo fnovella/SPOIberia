@@ -3,10 +3,11 @@ use crate::api::spo::SpoClient;
 use crate::auth::{AuthManager, DeviceCodePrompt};
 use crate::cloner::SiteClonerEngine;
 use crate::db::Database;
+use crate::i18n::Lang;
 use crate::importer::MatrixImporter;
 use crate::models::{
-    CloneConfig, DirectoryUser, SpoFolder, SpoGroup, SpoLibrary, SpoSite, SpoUser, StagingOp,
-    TransactionOpRecord, TransactionRecord,
+    CloneConfig, CloneMode, DirectoryUser, SpoFolder, SpoGroup, SpoLibrary, SpoSite, SpoUser,
+    StagingOp, TransactionOpRecord, TransactionRecord,
 };
 use crate::staging::{ExecutionReport, StagingQueue, TransactionExecutor};
 use std::collections::HashSet;
@@ -80,6 +81,11 @@ pub enum Modal {
     SyncControlMenu {
         scope: SyncMenuScope,
         selected_idx: usize, // 0 = Sincronización SharePoint, 1 = Accesos directos OneDrive, 2 = Ambos
+    },
+    ConfirmDestructiveClone {
+        source_url: String,
+        target_url: String,
+        typed_confirm: String,
     },
 }
 
@@ -159,6 +165,7 @@ pub enum AsyncEvent {
 }
 
 pub struct App {
+    pub lang: Lang,
     pub should_quit: bool,
     pub screen: Screen,
     pub tab: WorkspaceTab,
@@ -210,6 +217,7 @@ pub struct App {
     pub clone_include_files: bool,
     pub clone_include_unique_perms: bool,
     pub clone_overwrite: bool,
+    pub clone_destructive: bool,
     pub clone_selected_option: usize,
 
     // Tab 4: Staging & SQLite Transactions state
@@ -244,6 +252,7 @@ impl App {
         db: Database,
         graph: GraphClient,
         spo: SpoClient,
+        lang: Lang,
     ) -> Self {
         let (tx_sender, rx_receiver) = mpsc::unbounded_channel();
         let cached_sites = db.load_cached_sites().unwrap_or_default();
@@ -254,7 +263,8 @@ impl App {
             (
                 Screen::SiteSelector,
                 s.user_upn.unwrap_or_else(|| "usuario@m365".to_string()),
-                s.user_display_name.unwrap_or_else(|| "Usuario M365".to_string()),
+                s.user_display_name
+                    .unwrap_or_else(|| lang.tr("Usuario M365", "M365 User").to_string()),
                 s.root_site_url.unwrap_or_default(),
             )
         } else {
@@ -262,6 +272,7 @@ impl App {
         };
 
         let mut app = Self {
+            lang,
             should_quit: false,
             screen: initial_screen,
             tab: WorkspaceTab::GroupsAndUsers,
@@ -300,6 +311,7 @@ impl App {
             clone_include_files: true,
             clone_include_unique_perms: true,
             clone_overwrite: true,
+            clone_destructive: false,
             clone_selected_option: 0,
             staging: StagingQueue::new(),
             selected_staging_idx: 0,
@@ -357,7 +369,12 @@ impl App {
         };
         if target.is_none() {
             self.status_toast = Some((
-                "Introduce tu correo corporativo M365 (ej. usuario@dominio.com) antes de iniciar sesión".to_string(),
+                self.lang
+                    .tr(
+                        "Introduce tu correo corporativo M365 (ej. usuario@dominio.com) antes de iniciar sesión",
+                        "Enter your M365 corporate email (e.g. user@domain.com) before signing in",
+                    )
+                    .to_string(),
                 true,
             ));
         }
@@ -368,7 +385,14 @@ impl App {
         let Some(target) = self.resolve_login_target_or_toast() else {
             return;
         };
-        self.busy_message = Some("Resolviendo tenant e iniciando sesión en el navegador (PKCE)...".to_string());
+        self.busy_message = Some(
+            self.lang
+                .tr(
+                    "Resolviendo tenant e iniciando sesión en el navegador (PKCE)...",
+                    "Resolving tenant and signing in via browser (PKCE)...",
+                )
+                .to_string(),
+        );
         let auth = self.auth.clone();
         let graph = self.graph.clone();
         let tx = self.tx_sender.clone();
@@ -398,7 +422,14 @@ impl App {
         let Some(target) = self.resolve_login_target_or_toast() else {
             return;
         };
-        self.busy_message = Some("Resolviendo tenant y solicitando código de dispositivo a Entra ID...".to_string());
+        self.busy_message = Some(
+            self.lang
+                .tr(
+                    "Resolviendo tenant y solicitando código de dispositivo a Entra ID...",
+                    "Resolving tenant and requesting device code from Entra ID...",
+                )
+                .to_string(),
+        );
         let auth = self.auth.clone();
         let graph = self.graph.clone();
         let tx = self.tx_sender.clone();
@@ -436,12 +467,24 @@ impl App {
     }
 
     pub fn trigger_discover_sites(&mut self, keyword: Option<String>) {
+        let lang = self.lang;
         self.busy_message = Some(match &keyword {
-            Some(k) => format!(
-                "Buscando sitios SharePoint ('{}') y verificando rol Admin/Owner...",
-                k
-            ),
-            None => "Descubriendo sitios SharePoint donde eres Administrador o Propietario...".to_string(),
+            Some(k) => match lang {
+                Lang::Es => format!(
+                    "Buscando sitios SharePoint ('{}') y verificando rol Admin/Owner...",
+                    k
+                ),
+                Lang::En => format!(
+                    "Searching SharePoint sites ('{}') and checking Admin/Owner role...",
+                    k
+                ),
+            },
+            None => lang
+                .tr(
+                    "Descubriendo sitios SharePoint donde eres Administrador o Propietario...",
+                    "Discovering SharePoint sites where you are Admin or Owner...",
+                )
+                .to_string(),
         });
         let spo = self.spo.clone();
         let graph = self.graph.clone();
@@ -465,7 +508,11 @@ impl App {
     }
 
     pub fn trigger_check_manual_site(&mut self, url: String) {
-        self.busy_message = Some(format!("Verificando acceso y permisos en '{}'...", url));
+        let lang = self.lang;
+        self.busy_message = Some(match lang {
+            Lang::Es => format!("Verificando acceso y permisos en '{}'...", url),
+            Lang::En => format!("Checking access and permissions on '{}'...", url),
+        });
         let spo = self.spo.clone();
         let db = self.db.clone();
         let tx = self.tx_sender.clone();
@@ -477,10 +524,16 @@ impl App {
                     let _ = tx.send(AsyncEvent::SingleSiteChecked(site));
                 }
                 Ok(None) => {
-                    let _ = tx.send(AsyncEvent::Error(format!(
-                        "No tienes permisos de Administrador ni Propietario en '{}'",
-                        url
-                    )));
+                    let _ = tx.send(AsyncEvent::Error(match lang {
+                        Lang::Es => format!(
+                            "No tienes permisos de Administrador ni Propietario en '{}'",
+                            url
+                        ),
+                        Lang::En => format!(
+                            "You do not have Admin or Owner permissions on '{}'",
+                            url
+                        ),
+                    }));
                 }
                 Err(e) => {
                     let _ = tx.send(AsyncEvent::Error(e.to_string()));
@@ -508,7 +561,10 @@ impl App {
     }
 
     pub fn trigger_reload_workspace(&mut self, site_url: &str) {
-        self.busy_message = Some(format!("Cargando grupos, miembros y bibliotecas de '{}'...", site_url));
+        self.busy_message = Some(match self.lang {
+            Lang::Es => format!("Cargando grupos, miembros y bibliotecas de '{}'...", site_url),
+            Lang::En => format!("Loading groups, members, and libraries from '{}'...", site_url),
+        });
         let spo = self.spo.clone();
         let db = self.db.clone();
         let tx = self.tx_sender.clone();
@@ -560,7 +616,12 @@ impl App {
     pub fn open_sync_menu(&mut self, scope: SyncMenuScope) {
         if scope == SyncMenuScope::SelectedLibrary && self.selected_library().is_none() {
             self.status_toast = Some((
-                "No hay ninguna biblioteca seleccionada".to_string(),
+                self.lang
+                    .tr(
+                        "No hay ninguna biblioteca seleccionada",
+                        "No library selected",
+                    )
+                    .to_string(),
                 true,
             ));
             return;
@@ -622,7 +683,9 @@ impl App {
         };
         let Some(lib) = self.selected_library().cloned() else {
             self.status_toast = Some((
-                "No hay ninguna biblioteca seleccionada".to_string(),
+                self.lang
+                    .tr("No hay ninguna biblioteca seleccionada", "No library selected")
+                    .to_string(),
                 true,
             ));
             return;
@@ -639,17 +702,29 @@ impl App {
         });
 
         self.status_toast = Some((
-            match self.staging.library_sync_staging_state(&site_url, &lib.id) {
-                Some(true) => format!(
+            match (self.staging.library_sync_staging_state(&site_url, &lib.id), self.lang) {
+                (Some(true), Lang::Es) => format!(
                     "Encolado bloqueo de sync SharePoint en '{}'. Pulsa 'A' para Aplicar.",
                     lib.title
                 ),
-                Some(false) => format!(
+                (Some(true), Lang::En) => format!(
+                    "Queued SharePoint sync block on '{}'. Press 'A' to Apply.",
+                    lib.title
+                ),
+                (Some(false), Lang::Es) => format!(
                     "Encolada activación de sync SharePoint en '{}'. Pulsa 'A' para Aplicar.",
                     lib.title
                 ),
-                None => format!(
+                (Some(false), Lang::En) => format!(
+                    "Queued SharePoint sync enable on '{}'. Press 'A' to Apply.",
+                    lib.title
+                ),
+                (None, Lang::Es) => format!(
                     "Cancelado cambio pendiente de sync SharePoint en '{}' (neutralizado en Staging).",
+                    lib.title
+                ),
+                (None, Lang::En) => format!(
+                    "Cancelled pending SharePoint sync change on '{}' (neutralized in Staging).",
                     lib.title
                 ),
             },
@@ -664,7 +739,9 @@ impl App {
         };
         let Some(lib) = self.selected_library().cloned() else {
             self.status_toast = Some((
-                "No hay ninguna biblioteca seleccionada".to_string(),
+                self.lang
+                    .tr("No hay ninguna biblioteca seleccionada", "No library selected")
+                    .to_string(),
                 true,
             ));
             return;
@@ -680,17 +757,29 @@ impl App {
         });
 
         self.status_toast = Some((
-            match self.staging.library_shortcut_staging_state(&site_url, &lib.id) {
-                Some(true) => format!(
+            match (self.staging.library_shortcut_staging_state(&site_url, &lib.id), self.lang) {
+                (Some(true), Lang::Es) => format!(
                     "Encolado ocultar acceso directo OneDrive en '{}'. Pulsa 'A' para Aplicar.",
                     lib.title
                 ),
-                Some(false) => format!(
+                (Some(true), Lang::En) => format!(
+                    "Queued hiding OneDrive shortcut on '{}'. Press 'A' to Apply.",
+                    lib.title
+                ),
+                (Some(false), Lang::Es) => format!(
                     "Encolado mostrar acceso directo OneDrive en '{}'. Pulsa 'A' para Aplicar.",
                     lib.title
                 ),
-                None => format!(
+                (Some(false), Lang::En) => format!(
+                    "Queued showing OneDrive shortcut on '{}'. Press 'A' to Apply.",
+                    lib.title
+                ),
+                (None, Lang::Es) => format!(
                     "Cancelado cambio pendiente de accesos OneDrive en '{}' (neutralizado en Staging).",
+                    lib.title
+                ),
+                (None, Lang::En) => format!(
+                    "Cancelled pending OneDrive shortcut change on '{}' (neutralized in Staging).",
                     lib.title
                 ),
             },
@@ -705,7 +794,9 @@ impl App {
         };
         let Some(lib) = self.selected_library().cloned() else {
             self.status_toast = Some((
-                "No hay ninguna biblioteca seleccionada".to_string(),
+                self.lang
+                    .tr("No hay ninguna biblioteca seleccionada", "No library selected")
+                    .to_string(),
                 true,
             ));
             return;
@@ -741,21 +832,31 @@ impl App {
                 .library_shortcut_staging_state(&site_url, &lib.id)
                 .is_some();
 
-        let msg = if !any_pending {
-            format!(
+        let msg = match (any_pending, target_block, self.lang) {
+            (false, _, Lang::Es) => format!(
                 "Cancelados cambios pendientes de sync/OneDrive en '{}' (neutralizado en Staging).",
                 lib.title
-            )
-        } else if target_block {
-            format!(
+            ),
+            (false, _, Lang::En) => format!(
+                "Cancelled pending sync/OneDrive changes on '{}' (neutralized in Staging).",
+                lib.title
+            ),
+            (true, true, Lang::Es) => format!(
                 "Encolado bloqueo de sync SharePoint y acceso directo OneDrive en '{}'. Pulsa 'A' para Aplicar.",
                 lib.title
-            )
-        } else {
-            format!(
+            ),
+            (true, true, Lang::En) => format!(
+                "Queued blocking SharePoint sync and OneDrive shortcut on '{}'. Press 'A' to Apply.",
+                lib.title
+            ),
+            (true, false, Lang::Es) => format!(
                 "Encolada activación de sync SharePoint y acceso directo OneDrive en '{}'. Pulsa 'A' para Aplicar.",
                 lib.title
-            )
+            ),
+            (true, false, Lang::En) => format!(
+                "Queued enabling SharePoint sync and OneDrive shortcut on '{}'. Press 'A' to Apply.",
+                lib.title
+            ),
         };
         self.status_toast = Some((msg, false));
     }
@@ -804,21 +905,31 @@ impl App {
                 .iter()
                 .any(|l| self.staging.library_sync_staging_state(&site_url, &l.id).is_some());
 
-        let msg = if !any_sync_pending {
-            format!(
+        let msg = match (any_sync_pending, target_exclude, self.lang) {
+            (false, _, Lang::Es) => format!(
                 "Cancelados los cambios pendientes de sync SharePoint en '{}' (Staging neutralizado).",
                 site_title
-            )
-        } else if target_exclude {
-            format!(
+            ),
+            (false, _, Lang::En) => format!(
+                "Cancelled pending SharePoint sync changes on '{}' (Staging neutralized).",
+                site_title
+            ),
+            (true, true, Lang::Es) => format!(
                 "Encolado bloqueo de sync SharePoint en sitio '{}' y sus bibliotecas. Pulsa 'A' para Aplicar.",
                 site_title
-            )
-        } else {
-            format!(
+            ),
+            (true, true, Lang::En) => format!(
+                "Queued blocking SharePoint sync on site '{}' and its libraries. Press 'A' to Apply.",
+                site_title
+            ),
+            (true, false, Lang::Es) => format!(
                 "Encolada activación de sync SharePoint en sitio '{}' y sus bibliotecas. Pulsa 'A' para Aplicar.",
                 site_title
-            )
+            ),
+            (true, false, Lang::En) => format!(
+                "Queued enabling SharePoint sync on site '{}' and its libraries. Press 'A' to Apply.",
+                site_title
+            ),
         };
         self.status_toast = Some((msg, false));
     }
@@ -835,7 +946,12 @@ impl App {
 
         if self.libraries.is_empty() {
             self.status_toast = Some((
-                "No hay bibliotecas cargadas en este sitio para gestionar accesos directos OneDrive".to_string(),
+                self.lang
+                    .tr(
+                        "No hay bibliotecas cargadas en este sitio para gestionar accesos directos OneDrive",
+                        "No libraries loaded in this site to manage OneDrive shortcuts",
+                    )
+                    .to_string(),
                 true,
             ));
             return;
@@ -861,21 +977,31 @@ impl App {
             .iter()
             .any(|l| self.staging.library_shortcut_staging_state(&site_url, &l.id).is_some());
 
-        let msg = if !any_pending {
-            format!(
+        let msg = match (any_pending, target_hide, self.lang) {
+            (false, _, Lang::Es) => format!(
                 "Cancelados cambios pendientes de accesos OneDrive en '{}' (Staging neutralizado).",
                 site_title
-            )
-        } else if target_hide {
-            format!(
+            ),
+            (false, _, Lang::En) => format!(
+                "Cancelled pending OneDrive shortcut changes on '{}' (Staging neutralized).",
+                site_title
+            ),
+            (true, true, Lang::Es) => format!(
                 "Encolado ocultar accesos directos OneDrive en bibliotecas de '{}'. Pulsa 'A' para Aplicar.",
                 site_title
-            )
-        } else {
-            format!(
+            ),
+            (true, true, Lang::En) => format!(
+                "Queued hiding OneDrive shortcuts on libraries of '{}'. Press 'A' to Apply.",
+                site_title
+            ),
+            (true, false, Lang::Es) => format!(
                 "Encolado mostrar accesos directos OneDrive en bibliotecas de '{}'. Pulsa 'A' para Aplicar.",
                 site_title
-            )
+            ),
+            (true, false, Lang::En) => format!(
+                "Queued showing OneDrive shortcuts on libraries of '{}'. Press 'A' to Apply.",
+                site_title
+            ),
         };
         self.status_toast = Some((msg, false));
     }
@@ -938,21 +1064,31 @@ impl App {
                         .is_some()
             });
 
-        let msg = if !any_pending {
-            format!(
+        let msg = match (any_pending, target_block, self.lang) {
+            (false, _, Lang::Es) => format!(
                 "Cancelados cambios pendientes de sync/OneDrive en '{}' (Staging neutralizado).",
                 site_title
-            )
-        } else if target_block {
-            format!(
+            ),
+            (false, _, Lang::En) => format!(
+                "Cancelled pending sync/OneDrive changes on '{}' (Staging neutralized).",
+                site_title
+            ),
+            (true, true, Lang::Es) => format!(
                 "Encolado bloqueo de sync SharePoint y accesos OneDrive en '{}'. Pulsa 'A' para Aplicar.",
                 site_title
-            )
-        } else {
-            format!(
+            ),
+            (true, true, Lang::En) => format!(
+                "Queued blocking SharePoint sync and OneDrive shortcuts on '{}'. Press 'A' to Apply.",
+                site_title
+            ),
+            (true, false, Lang::Es) => format!(
                 "Encolada activación de sync SharePoint y accesos OneDrive en '{}'. Pulsa 'A' para Aplicar.",
                 site_title
-            )
+            ),
+            (true, false, Lang::En) => format!(
+                "Queued enabling SharePoint sync and OneDrive shortcuts on '{}'. Press 'A' to Apply.",
+                site_title
+            ),
         };
         self.status_toast = Some((msg, false));
     }
@@ -962,7 +1098,14 @@ impl App {
             return;
         };
         let site_url = site.url.clone();
-        self.busy_message = Some("Cargando miembros del grupo...".to_string());
+        self.busy_message = Some(
+            self.lang
+                .tr(
+                    "Cargando miembros del grupo...",
+                    "Loading group members...",
+                )
+                .to_string(),
+        );
         let spo = self.spo.clone();
         let tx = self.tx_sender.clone();
 
@@ -983,7 +1126,10 @@ impl App {
             return;
         };
         let site_url = site.url.clone();
-        self.busy_message = Some(format!("Cargando carpetas de '{}'...", library_title));
+        self.busy_message = Some(match self.lang {
+            Lang::Es => format!("Cargando carpetas de '{}'...", library_title),
+            Lang::En => format!("Loading folders from '{}'...", library_title),
+        });
         let spo = self.spo.clone();
         let tx = self.tx_sender.clone();
 
@@ -1058,10 +1204,16 @@ impl App {
             .selected_library()
             .map(|l| l.title.clone())
             .unwrap_or_else(|| "Documents".to_string());
-        self.busy_message = Some(format!(
-            "Exportando permisos únicos de '{}' a '{}'...",
-            lib_title, file_path
-        ));
+        self.busy_message = Some(match self.lang {
+            Lang::Es => format!(
+                "Exportando permisos únicos de '{}' a '{}'...",
+                lib_title, file_path
+            ),
+            Lang::En => format!(
+                "Exporting unique permissions from '{}' to '{}'...",
+                lib_title, file_path
+            ),
+        });
         let spo = self.spo.clone();
         let tx = self.tx_sender.clone();
 
@@ -1087,7 +1239,12 @@ impl App {
         };
         if self.clone_source_url.trim().is_empty() {
             self.status_toast = Some((
-                "Indica primero la URL del sitio SharePoint Origen (pulsa 's')".to_string(),
+                self.lang
+                    .tr(
+                        "Indica primero la URL del sitio SharePoint Origen (pulsa 's')",
+                        "Enter the Source SharePoint site URL first (press 's')",
+                    )
+                    .to_string(),
                 true,
             ));
             return;
@@ -1101,13 +1258,37 @@ impl App {
             include_files: self.clone_include_files,
             include_unique_permissions: self.clone_include_unique_perms,
             overwrite: self.clone_overwrite,
-            note: Some(format!("Clonado desde {}", self.clone_source_url)),
+            note: Some(format!(
+                "Clonado {} desde {}",
+                if self.clone_destructive {
+                    "DESTRUCTIVO"
+                } else {
+                    "aditivo"
+                },
+                self.clone_source_url
+            )),
+            mode: if self.clone_destructive {
+                CloneMode::Destructive
+            } else {
+                CloneMode::Additive
+            },
+            current_actor_upn: if self.user_upn.is_empty() {
+                None
+            } else {
+                Some(self.user_upn.clone())
+            },
         };
 
-        self.busy_message = Some(format!(
-            "Analizando sitio origen '{}' y preparando plan de clonado...",
-            cfg.source_site_url
-        ));
+        self.busy_message = Some(match self.lang {
+            Lang::Es => format!(
+                "Analizando sitio origen '{}' y preparando plan de clonado...",
+                cfg.source_site_url
+            ),
+            Lang::En => format!(
+                "Analyzing source site '{}' and building clone plan...",
+                cfg.source_site_url
+            ),
+        });
         let spo = self.spo.clone();
         let tx = self.tx_sender.clone();
 
@@ -1132,7 +1313,15 @@ impl App {
             return;
         };
         if self.staging.is_empty() {
-            self.status_toast = Some(("No hay cambios pendientes en Staging".to_string(), true));
+            self.status_toast = Some((
+                self.lang
+                    .tr(
+                        "No hay cambios pendientes en Staging",
+                        "No pending changes in Staging",
+                    )
+                    .to_string(),
+                true,
+            ));
             return;
         }
 
@@ -1146,10 +1335,16 @@ impl App {
         let site_title = site.title.clone();
         let source = self.last_staging_source.clone();
 
-        self.busy_message = Some(format!(
-            "Aplicando {} operación(es) en SharePoint y registrando transacción en SQLite...",
-            queue_clone.len()
-        ));
+        self.busy_message = Some(match self.lang {
+            Lang::Es => format!(
+                "Aplicando {} operación(es) en SharePoint y registrando transacción en SQLite...",
+                queue_clone.len()
+            ),
+            Lang::En => format!(
+                "Applying {} operation(s) in SharePoint and recording transaction in SQLite...",
+                queue_clone.len()
+            ),
+        });
 
         let spo = self.spo.clone();
         let db = self.db.clone();
@@ -1180,10 +1375,17 @@ impl App {
     }
 
     pub fn trigger_revert_transaction(&mut self, tx_id: i64, only_op_id: Option<i64>) {
-        self.busy_message = Some(format!(
-            "Revirtiendo (Rollback) transacción #{} contra SharePoint Online...",
-            tx_id
-        ));
+        let lang = self.lang;
+        self.busy_message = Some(match lang {
+            Lang::Es => format!(
+                "Revirtiendo (Rollback) transacción #{} contra SharePoint Online...",
+                tx_id
+            ),
+            Lang::En => format!(
+                "Reverting (Rollback) transaction #{} against SharePoint Online...",
+                tx_id
+            ),
+        });
         let spo = self.spo.clone();
         let db = self.db.clone();
         let tx = self.tx_sender.clone();
@@ -1195,10 +1397,16 @@ impl App {
                     let reverted_cnt = ops.iter().filter(|o| o.status == "REVERTED").count();
                     let _ = tx.send(AsyncEvent::TransactionReverted {
                         tx: updated_tx,
-                        message: format!(
-                            "Rollback completado: {} operación(es) revertida(s) en transacción #{}",
-                            reverted_cnt, tx_id
-                        ),
+                        message: match lang {
+                            Lang::Es => format!(
+                                "Rollback completado: {} operación(es) revertida(s) en transacción #{}",
+                                reverted_cnt, tx_id
+                            ),
+                            Lang::En => format!(
+                                "Rollback complete: {} operation(s) reverted in transaction #{}",
+                                reverted_cnt, tx_id
+                            ),
+                        },
                     });
                 }
                 Err(e) => {
@@ -1238,14 +1446,28 @@ impl App {
                 self.user_display_name = display_name;
                 self.root_site_url = root_url;
                 self.screen = Screen::SiteSelector;
-                self.status_toast = Some(("✓ Sesión iniciada en Microsoft 365".to_string(), false));
+                self.status_toast = Some((
+                    self.lang
+                        .tr(
+                            "✓ Sesión iniciada en Microsoft 365",
+                            "✓ Signed in to Microsoft 365",
+                        )
+                        .to_string(),
+                    false,
+                ));
                 self.trigger_discover_sites(None);
             }
             AsyncEvent::DeviceCodeReady(prompt) => {
-                self.busy_message = Some(format!(
-                    "Esperando confirmación del código {} en {}",
-                    prompt.user_code, prompt.verification_uri
-                ));
+                self.busy_message = Some(match self.lang {
+                    Lang::Es => format!(
+                        "Esperando confirmación del código {} en {}",
+                        prompt.user_code, prompt.verification_uri
+                    ),
+                    Lang::En => format!(
+                        "Waiting for code {} confirmation at {}",
+                        prompt.user_code, prompt.verification_uri
+                    ),
+                });
                 self.device_code_prompt = Some(prompt);
             }
             AsyncEvent::SitesDiscovered(sites) => {
@@ -1254,10 +1476,16 @@ impl App {
                 self.sites = sites;
                 self.selected_site_idx = 0;
                 self.status_toast = Some((
-                    format!(
-                        "✓ {} sitio(s) SharePoint cargados donde eres Admin o Propietario",
-                        count
-                    ),
+                    match self.lang {
+                        Lang::Es => format!(
+                            "✓ {} sitio(s) SharePoint cargados donde eres Admin o Propietario",
+                            count
+                        ),
+                        Lang::En => format!(
+                            "✓ Loaded {} SharePoint site(s) where you are Admin or Owner",
+                            count
+                        ),
+                    },
                     false,
                 ));
             }
@@ -1345,20 +1573,32 @@ impl App {
                 self.tab = WorkspaceTab::StagingAndHistory;
                 self.focus = PaneFocus::Left;
                 self.status_toast = Some((
-                    format!(
-                        "✓ Matriz '{}' cargada: {} operación(es) añadidas a Staging. Pulsa 'A' para Aplicar.",
-                        source_file, count
-                    ),
+                    match self.lang {
+                        Lang::Es => format!(
+                            "✓ Matriz '{}' cargada: {} operación(es) añadidas a Staging. Pulsa 'A' para Aplicar.",
+                            source_file, count
+                        ),
+                        Lang::En => format!(
+                            "✓ Matrix '{}' loaded: {} operation(s) queued in Staging. Press 'A' to Apply.",
+                            source_file, count
+                        ),
+                    },
                     false,
                 ));
             }
             AsyncEvent::MatrixExported { count, path } => {
                 self.busy_message = None;
                 self.status_toast = Some((
-                    format!(
-                        "✓ Exportadas {} carpetas con permisos únicos en '{}'",
-                        count, path
-                    ),
+                    match self.lang {
+                        Lang::Es => format!(
+                            "✓ Exportadas {} carpetas con permisos únicos en '{}'",
+                            count, path
+                        ),
+                        Lang::En => format!(
+                            "✓ Exported {} folder(s) with unique permissions to '{}'",
+                            count, path
+                        ),
+                    },
                     false,
                 ));
             }
@@ -1375,10 +1615,16 @@ impl App {
                 self.tab = WorkspaceTab::StagingAndHistory;
                 self.focus = PaneFocus::Left;
                 self.status_toast = Some((
-                    format!(
-                        "✓ Plan de clonado listo ({} operaciones en Staging). Revisa y pulsa 'A' para Aplicar.",
-                        count
-                    ),
+                    match self.lang {
+                        Lang::Es => format!(
+                            "✓ Plan de clonado listo ({} operaciones en Staging). Revisa y pulsa 'A' para Aplicar.",
+                            count
+                        ),
+                        Lang::En => format!(
+                            "✓ Clone plan ready ({} operation(s) in Staging). Review and press 'A' to Apply.",
+                            count
+                        ),
+                    },
                     false,
                 ));
             }
@@ -1388,12 +1634,20 @@ impl App {
                 self.last_staging_source = "TUI".to_string();
                 let is_err = report.status == "FAILED";
                 self.status_toast = Some((
-                    format!(
-                        "✓ Transacción #{:?} [{}]: {}",
-                        report.transaction_id.unwrap_or(0),
-                        report.status,
-                        report.summary
-                    ),
+                    match self.lang {
+                        Lang::Es => format!(
+                            "✓ Transacción #{:?} [{}]: {}",
+                            report.transaction_id.unwrap_or(0),
+                            report.status,
+                            report.summary
+                        ),
+                        Lang::En => format!(
+                            "✓ Transaction #{:?} [{}]: {}",
+                            report.transaction_id.unwrap_or(0),
+                            report.status,
+                            report.summary
+                        ),
+                    },
                     is_err,
                 ));
                 if let Some(site_url) = self.current_site.as_ref().map(|s| s.url.clone()) {

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod cli;
 pub mod cloner;
 pub mod db;
+pub mod i18n;
 pub mod importer;
 pub mod models;
 pub mod staging;
@@ -17,6 +18,7 @@ use crate::app::{
 use crate::auth::AuthManager;
 use crate::cli::{Cli, Commands};
 use crate::db::Database;
+use crate::i18n::Lang;
 use crate::models::StagingOp;
 use anyhow::Result;
 use clap::Parser;
@@ -34,8 +36,10 @@ use std::time::Duration;
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let lang = Lang::resolve(cli.lang);
+
     match &cli.command {
-        None | Some(Commands::Tui) => run_tui().await,
+        None | Some(Commands::Tui) => run_tui(lang).await,
         Some(cmd) => {
             if let Err(err) = cli::run_cli_command(&cli, cmd).await {
                 if cli.effective_format() == cli::OutputFormat::Json {
@@ -56,13 +60,13 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_tui() -> Result<()> {
+async fn run_tui(lang: Lang) -> Result<()> {
     let auth = AuthManager::new()?;
     let db = Database::open_default()?;
     let graph = GraphClient::new(auth.clone())?;
     let spo = SpoClient::new(auth.clone())?;
 
-    let mut app = App::new(auth, db, graph, spo);
+    let mut app = App::new(auth, db, graph, spo, lang);
 
     // Install panic hook so terminal is always restored cleanly
     let original_hook = std::panic::take_hook();
@@ -195,24 +199,54 @@ fn handle_site_selector_keys(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('/') => {
             app.modal = Modal::TextInput {
-                title: "Filtrar Sitios Localmente".to_string(),
-                prompt: "Escribe parte del título, URL o rol (deja vacío para mostrar todos):".to_string(),
+                title: app
+                    .lang
+                    .tr("Filtrar Sitios Localmente", "Filter Sites Locally")
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "Escribe parte del título, URL o rol (deja vacío para mostrar todos):",
+                        "Type part of the title, URL or role (leave empty to show all):",
+                    )
+                    .to_string(),
                 value: app.site_filter.clone(),
                 kind: TextInputKind::FilterSitesLocal,
             };
         }
         KeyCode::Char('s') => {
             app.modal = Modal::TextInput {
-                title: "Buscar Sitios en el Tenant M365".to_string(),
-                prompt: "Palabra clave a buscar en SharePoint Search (verifica rol Admin/Owner):".to_string(),
+                title: app
+                    .lang
+                    .tr(
+                        "Buscar Sitios en el Tenant M365",
+                        "Search Sites in M365 Tenant",
+                    )
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "Palabra clave a buscar en SharePoint Search (verifica rol Admin/Owner):",
+                        "Keyword to search in SharePoint Search (verifies Admin/Owner role):",
+                    )
+                    .to_string(),
                 value: String::new(),
                 kind: TextInputKind::SearchSitesTenant,
             };
         }
         KeyCode::Char('u') => {
             app.modal = Modal::TextInput {
-                title: "Abrir Sitio SharePoint por URL".to_string(),
-                prompt: "Introduce la URL completa del sitio SharePoint:".to_string(),
+                title: app
+                    .lang
+                    .tr("Abrir Sitio SharePoint por URL", "Open SharePoint Site by URL")
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "Introduce la URL completa del sitio SharePoint:",
+                        "Enter the full SharePoint site URL:",
+                    )
+                    .to_string(),
                 value: "https://".to_string(),
                 kind: TextInputKind::ManualSiteUrl,
             };
@@ -221,10 +255,16 @@ fn handle_site_selector_keys(app: &mut App, key: KeyEvent) {
             if let Some(site) = app.selected_site() {
                 app.clone_source_url = site.url.clone();
                 app.status_toast = Some((
-                    format!(
-                        "✓ Sitio '{}' fijado como Origen para Clonado (Fase 3)",
-                        site.title
-                    ),
+                    match app.lang {
+                        Lang::Es => format!(
+                            "✓ Sitio '{}' fijado como Origen para Clonado (Fase 3)",
+                            site.title
+                        ),
+                        Lang::En => format!(
+                            "✓ Site '{}' set as Clone Source (Phase 3)",
+                            site.title
+                        ),
+                    },
                     false,
                 ));
             }
@@ -269,7 +309,12 @@ fn handle_workspace_keys(app: &mut App, key: KeyEvent) {
         KeyCode::Char('A') => {
             if app.staging.is_empty() {
                 app.status_toast = Some((
-                    "No hay cambios pendientes en la cola de Staging para aplicar".to_string(),
+                    app.lang
+                        .tr(
+                            "No hay cambios pendientes en la cola de Staging para aplicar",
+                            "No pending changes in Staging queue to apply",
+                        )
+                        .to_string(),
                     true,
                 ));
             } else {
@@ -360,18 +405,36 @@ fn handle_tab_groups_keys(app: &mut App, key: KeyEvent) {
                     user_display_name: member.title.clone(),
                 });
                 app.status_toast = Some((
-                    format!(
-                        "Encolada baja de '{}' en '{}'. Pulsa 'A' para Aplicar.",
-                        member.title, grp.title
-                    ),
+                    match app.lang {
+                        Lang::Es => format!(
+                            "Encolada baja de '{}' en '{}'. Pulsa 'A' para Aplicar.",
+                            member.title, grp.title
+                        ),
+                        Lang::En => format!(
+                            "Queued removal of '{}' from '{}'. Press 'A' to Apply.",
+                            member.title, grp.title
+                        ),
+                    },
                     false,
                 ));
             }
         }
         KeyCode::Char('g') => {
             app.modal = Modal::TextInput {
-                title: "Crear Nuevo Grupo de SharePoint".to_string(),
-                prompt: "Nombre del nuevo grupo de SharePoint a crear en el sitio:".to_string(),
+                title: app
+                    .lang
+                    .tr(
+                        "Crear Nuevo Grupo de SharePoint",
+                        "Create New SharePoint Group",
+                    )
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "Nombre del nuevo grupo de SharePoint a crear en el sitio:",
+                        "Name of the new SharePoint group to create on the site:",
+                    )
+                    .to_string(),
                 value: String::new(),
                 kind: TextInputKind::CreateSharePointGroup,
             };
@@ -416,16 +479,40 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
         },
         KeyCode::Char('n') => {
             app.modal = Modal::TextInput {
-                title: "Crear Nueva Carpeta (en Biblioteca Actual)".to_string(),
-                prompt: "Ruta relativa de la carpeta a crear (ej. 01_Direccion/Confidencial):".to_string(),
+                title: app
+                    .lang
+                    .tr(
+                        "Crear Nueva Carpeta (en Biblioteca Actual)",
+                        "Create New Folder (in Current Library)",
+                    )
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "Ruta relativa de la carpeta a crear (ej. 01_Direccion/Confidencial):",
+                        "Relative folder path to create (e.g. 01_Exec/Confidential):",
+                    )
+                    .to_string(),
                 value: String::new(),
                 kind: TextInputKind::CreateFolderRelativePath,
             };
         }
         KeyCode::Char('b') => {
             app.modal = Modal::TextInput {
-                title: "Crear Nueva Biblioteca de Documentos".to_string(),
-                prompt: "Título de la nueva Biblioteca de Documentos:".to_string(),
+                title: app
+                    .lang
+                    .tr(
+                        "Crear Nueva Biblioteca de Documentos",
+                        "Create New Document Library",
+                    )
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "Título de la nueva Biblioteca de Documentos:",
+                        "Title of the new Document Library:",
+                    )
+                    .to_string(),
                 value: String::new(),
                 kind: TextInputKind::CreateDocumentLibrary,
             };
@@ -444,7 +531,12 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
                 .unwrap_or_default();
             if rel_path.is_empty() {
                 app.status_toast = Some((
-                    "Selecciona o crea primero una carpeta para asignarle permisos".to_string(),
+                    app.lang
+                        .tr(
+                            "Selecciona o crea primero una carpeta para asignarle permisos",
+                            "Select or create a folder first to grant permissions",
+                        )
+                        .to_string(),
                     true,
                 ));
                 return;
@@ -462,16 +554,40 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('i') => {
             app.modal = Modal::TextInput {
-                title: "Importar Matriz de Carpetas y Permisos (CSV / JSON)".to_string(),
-                prompt: "Ruta del archivo externo (.csv o .json):".to_string(),
+                title: app
+                    .lang
+                    .tr(
+                        "Importar Matriz de Carpetas y Permisos (CSV / JSON)",
+                        "Import Folders & Permissions Matrix (CSV / JSON)",
+                    )
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "Ruta del archivo externo (.csv o .json):",
+                        "Path to external file (.csv or .json):",
+                    )
+                    .to_string(),
                 value: "./examples/sample-permissions.csv".to_string(),
                 kind: TextInputKind::ImportMatrixFilePath,
             };
         }
         KeyCode::Char('e') => {
             app.modal = Modal::TextInput {
-                title: "Exportar Matriz de Permisos Únicos (CSV / JSON)".to_string(),
-                prompt: "Ruta del archivo de salida (.csv o .json):".to_string(),
+                title: app
+                    .lang
+                    .tr(
+                        "Exportar Matriz de Permisos Únicos (CSV / JSON)",
+                        "Export Unique Permissions Matrix (CSV / JSON)",
+                    )
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "Ruta del archivo de salida (.csv o .json):",
+                        "Output file path (.csv or .json):",
+                    )
+                    .to_string(),
                 value: "./exported-permissions.json".to_string(),
                 kind: TextInputKind::ExportMatrixFilePath,
             };
@@ -488,28 +604,66 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
 fn handle_tab_clone_keys(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => {
-            app.clone_selected_option = (app.clone_selected_option + 1) % 4;
+            app.clone_selected_option = (app.clone_selected_option + 1) % 5;
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            app.clone_selected_option = app.clone_selected_option.checked_sub(1).unwrap_or(3);
+            app.clone_selected_option = app.clone_selected_option.checked_sub(1).unwrap_or(4);
         }
         KeyCode::Char(' ') => match app.clone_selected_option {
             0 => app.clone_include_groups = !app.clone_include_groups,
             1 => app.clone_include_files = !app.clone_include_files,
             2 => app.clone_include_unique_perms = !app.clone_include_unique_perms,
             3 => app.clone_overwrite = !app.clone_overwrite,
+            4 => app.clone_destructive = !app.clone_destructive,
             _ => {}
         },
         KeyCode::Char('s') => {
             app.modal = Modal::TextInput {
-                title: "Sitio SharePoint Origen para Clonado".to_string(),
-                prompt: "URL del sitio SharePoint Origen desde el que copiar grupos, datos y permisos:".to_string(),
+                title: app
+                    .lang
+                    .tr(
+                        "Sitio SharePoint Origen para Clonado",
+                        "Source SharePoint Site for Cloning",
+                    )
+                    .to_string(),
+                prompt: app
+                    .lang
+                    .tr(
+                        "URL del sitio SharePoint Origen desde el que copiar grupos, datos y permisos:",
+                        "URL of the Source SharePoint site to copy groups, data and permissions from:",
+                    )
+                    .to_string(),
                 value: app.clone_source_url.clone(),
                 kind: TextInputKind::SetCloneSourceUrl,
             };
         }
         KeyCode::Enter => {
-            app.trigger_plan_clone();
+            if app.clone_destructive {
+                if app.clone_source_url.trim().is_empty() {
+                    app.status_toast = Some((
+                        app.lang
+                            .tr(
+                                "Indica primero la URL del sitio SharePoint Origen (pulsa 's')",
+                                "Enter the Source SharePoint site URL first (press 's')",
+                            )
+                            .to_string(),
+                        true,
+                    ));
+                    return;
+                }
+                let target_url = app
+                    .current_site
+                    .as_ref()
+                    .map(|s| s.url.clone())
+                    .unwrap_or_default();
+                app.modal = Modal::ConfirmDestructiveClone {
+                    source_url: app.clone_source_url.trim().to_string(),
+                    target_url,
+                    typed_confirm: String::new(),
+                };
+            } else {
+                app.trigger_plan_clone();
+            }
         }
         _ => {}
     }
@@ -589,7 +743,12 @@ fn handle_tab_staging_history_keys(app: &mut App, key: KeyEvent) {
         KeyCode::Char('X') => {
             app.staging.clear();
             app.selected_staging_idx = 0;
-            app.status_toast = Some(("Cola de Staging vaciada".to_string(), false));
+            app.status_toast = Some((
+                app.lang
+                    .tr("Cola de Staging vaciada", "Staging queue cleared")
+                    .to_string(),
+                false,
+            ));
         }
         KeyCode::Char('R') => {
             if let Some(tx) = app.transactions.get(app.selected_tx_idx) {
@@ -684,10 +843,16 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                                     description: "Creado desde SPOIberia TUI".to_string(),
                                 });
                                 app.status_toast = Some((
-                                    format!(
-                                        "Encolada creación del grupo '{}'. Pulsa 'A' para Aplicar.",
-                                        trimmed
-                                    ),
+                                    match app.lang {
+                                        Lang::Es => format!(
+                                            "Encolada creación del grupo '{}'. Pulsa 'A' para Aplicar.",
+                                            trimmed
+                                        ),
+                                        Lang::En => format!(
+                                            "Queued creation of group '{}'. Press 'A' to Apply.",
+                                            trimmed
+                                        ),
+                                    },
                                     false,
                                 ));
                             }
@@ -702,10 +867,16 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                                     description: "Biblioteca creada desde SPOIberia".to_string(),
                                 });
                                 app.status_toast = Some((
-                                    format!(
-                                        "Encolada creación de biblioteca '{}'. Pulsa 'A' para Aplicar.",
-                                        trimmed
-                                    ),
+                                    match app.lang {
+                                        Lang::Es => format!(
+                                            "Encolada creación de biblioteca '{}'. Pulsa 'A' para Aplicar.",
+                                            trimmed
+                                        ),
+                                        Lang::En => format!(
+                                            "Queued creation of library '{}'. Press 'A' to Apply.",
+                                            trimmed
+                                        ),
+                                    },
                                     false,
                                 ));
                             }
@@ -724,10 +895,16 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                                     relative_folder_path: trimmed.clone(),
                                 });
                                 app.status_toast = Some((
-                                    format!(
-                                        "Encolada creación de carpeta '{}/{}'. Pulsa 'A' para Aplicar.",
-                                        lib_title, trimmed
-                                    ),
+                                    match app.lang {
+                                        Lang::Es => format!(
+                                            "Encolada creación de carpeta '{}/{}'. Pulsa 'A' para Aplicar.",
+                                            lib_title, trimmed
+                                        ),
+                                        Lang::En => format!(
+                                            "Queued creation of folder '{}/{}'. Press 'A' to Apply.",
+                                            lib_title, trimmed
+                                        ),
+                                    },
                                     false,
                                 ));
                             }
@@ -900,10 +1077,16 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 app.modal = Modal::None;
                 if added_cnt > 0 {
                     app.status_toast = Some((
-                        format!(
-                            "✓ {} usuario(s) encolados para añadir a '{}'. Pulsa 'A' para Aplicar.",
-                            added_cnt, group_title
-                        ),
+                        match app.lang {
+                            Lang::Es => format!(
+                                "✓ {} usuario(s) encolados para añadir a '{}'. Pulsa 'A' para Aplicar.",
+                                added_cnt, group_title
+                            ),
+                            Lang::En => format!(
+                                "✓ {} user(s) queued to add to '{}'. Press 'A' to Apply.",
+                                added_cnt, group_title
+                            ),
+                        },
                         false,
                     ));
                 }
@@ -1019,7 +1202,15 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
             KeyCode::Enter => {
                 let grp = group_name.trim().to_string();
                 if grp.is_empty() {
-                    app.status_toast = Some(("El nombre del grupo no puede estar vacío".to_string(), true));
+                    app.status_toast = Some((
+                        app.lang
+                            .tr(
+                                "El nombre del grupo no puede estar vacío",
+                                "Group name cannot be empty",
+                            )
+                            .to_string(),
+                        true,
+                    ));
                     return;
                 }
                 let role_name = STANDARD_ROLES
@@ -1052,10 +1243,16 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                         create_group_if_missing,
                     });
                     app.status_toast = Some((
-                        format!(
-                            "✓ Permiso [{}] para '{}' en '{}' encolado en Staging. Pulsa 'A' para Aplicar.",
-                            role_name, grp, relative_folder_path
-                        ),
+                        match app.lang {
+                            Lang::Es => format!(
+                                "✓ Permiso [{}] para '{}' en '{}' encolado en Staging. Pulsa 'A' para Aplicar.",
+                                role_name, grp, relative_folder_path
+                            ),
+                            Lang::En => format!(
+                                "✓ Permission [{}] for '{}' on '{}' queued in Staging. Press 'A' to Apply.",
+                                role_name, grp, relative_folder_path
+                            ),
+                        },
                         false,
                     ));
                 }
@@ -1096,6 +1293,10 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 app.modal = Modal::None;
                 app.trigger_revert_transaction(tx_id, only_op_id);
             }
+            KeyCode::Char('s') | KeyCode::Char('S') if app.lang == Lang::Es => {
+                app.modal = Modal::None;
+                app.trigger_revert_transaction(tx_id, only_op_id);
+            }
             _ => {}
         },
         Modal::SyncControlMenu {
@@ -1132,6 +1333,52 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
             KeyCode::Enter => {
                 app.modal = Modal::None;
                 apply_sync_menu_choice(app, scope, selected_idx);
+            }
+            _ => {}
+        },
+        Modal::ConfirmDestructiveClone {
+            source_url,
+            target_url,
+            mut typed_confirm,
+        } => match key.code {
+            KeyCode::Esc => app.modal = Modal::None,
+            KeyCode::Backspace => {
+                typed_confirm.pop();
+                app.modal = Modal::ConfirmDestructiveClone {
+                    source_url,
+                    target_url,
+                    typed_confirm,
+                };
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                typed_confirm.push(c);
+                app.modal = Modal::ConfirmDestructiveClone {
+                    source_url,
+                    target_url,
+                    typed_confirm,
+                };
+            }
+            KeyCode::Enter => {
+                let confirmed = typed_confirm.trim().eq_ignore_ascii_case("BORRAR")
+                    || typed_confirm.trim().eq_ignore_ascii_case("DELETE");
+                if confirmed {
+                    app.modal = Modal::None;
+                    app.trigger_plan_clone();
+                } else {
+                    app.status_toast = Some((
+                        app.lang
+                            .tr(
+                                "Debes escribir exactamente BORRAR para confirmar el clonado destructivo",
+                                "You must type DELETE to confirm destructive cloning",
+                            )
+                            .to_string(),
+                        true,
+                    ));
+                }
             }
             _ => {}
         },

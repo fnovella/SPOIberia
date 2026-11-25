@@ -314,9 +314,38 @@ pub enum StagingOp {
         library_title: String,
         hide_shortcut_button: bool,
     },
+    // Destructive clone cleanup operations (non-reversible)
+    DeleteLibrary {
+        site_url: String,
+        library_id: String,
+        library_title: String,
+    },
+    DeleteFolder {
+        site_url: String,
+        folder_server_relative_url: String,
+    },
+    DeleteFile {
+        site_url: String,
+        file_server_relative_url: String,
+    },
+    DeleteGroup {
+        site_url: String,
+        group_id: i64,
+        group_title: String,
+    },
 }
 
 impl StagingOp {
+    pub fn is_destructive(&self) -> bool {
+        matches!(
+            self,
+            StagingOp::DeleteLibrary { .. }
+                | StagingOp::DeleteFolder { .. }
+                | StagingOp::DeleteFile { .. }
+                | StagingOp::DeleteGroup { .. }
+        )
+    }
+
     pub fn op_type_code(&self) -> &'static str {
         match self {
             StagingOp::AddUserToGroup { .. } => "ADD_USER_TO_GROUP",
@@ -331,6 +360,10 @@ impl StagingOp {
             StagingOp::SetSiteOfflineSync { .. } => "SET_SITE_OFFLINE_SYNC",
             StagingOp::SetLibraryOfflineSync { .. } => "SET_LIBRARY_OFFLINE_SYNC",
             StagingOp::SetLibraryOneDriveShortcuts { .. } => "SET_LIBRARY_ONEDRIVE_SHORTCUTS",
+            StagingOp::DeleteLibrary { .. } => "DELETE_LIBRARY",
+            StagingOp::DeleteFolder { .. } => "DELETE_FOLDER",
+            StagingOp::DeleteFile { .. } => "DELETE_FILE",
+            StagingOp::DeleteGroup { .. } => "DELETE_GROUP",
         }
     }
 
@@ -346,7 +379,11 @@ impl StagingOp {
             | StagingOp::AssignSiteRole { site_url, .. }
             | StagingOp::SetSiteOfflineSync { site_url, .. }
             | StagingOp::SetLibraryOfflineSync { site_url, .. }
-            | StagingOp::SetLibraryOneDriveShortcuts { site_url, .. } => site_url,
+            | StagingOp::SetLibraryOneDriveShortcuts { site_url, .. }
+            | StagingOp::DeleteLibrary { site_url, .. }
+            | StagingOp::DeleteFolder { site_url, .. }
+            | StagingOp::DeleteFile { site_url, .. }
+            | StagingOp::DeleteGroup { site_url, .. } => site_url,
             StagingOp::ServerSideCopy {
                 target_site_url, ..
             } => target_site_url,
@@ -354,84 +391,206 @@ impl StagingOp {
     }
 
     pub fn label(&self) -> String {
-        match self {
-            StagingOp::AddUserToGroup {
-                group_title,
-                user_display_name,
-                user_identifier,
-                ..
-            } => format!(
+        self.label_for(crate::i18n::Lang::Es)
+    }
+
+    pub fn label_for(&self, lang: crate::i18n::Lang) -> String {
+        use crate::i18n::Lang;
+        match (self, lang) {
+            (
+                StagingOp::AddUserToGroup {
+                    group_title,
+                    user_display_name,
+                    user_identifier,
+                    ..
+                },
+                Lang::Es,
+            ) => format!(
                 "[+] Añadir '{}' ({}) al grupo '{}'",
                 user_display_name, user_identifier, group_title
             ),
-            StagingOp::RemoveUserFromGroup {
-                group_title,
-                user_display_name,
-                user_identifier,
-                ..
-            } => format!(
+            (
+                StagingOp::AddUserToGroup {
+                    group_title,
+                    user_display_name,
+                    user_identifier,
+                    ..
+                },
+                Lang::En,
+            ) => format!(
+                "[+] Add '{}' ({}) to group '{}'",
+                user_display_name, user_identifier, group_title
+            ),
+            (
+                StagingOp::RemoveUserFromGroup {
+                    group_title,
+                    user_display_name,
+                    user_identifier,
+                    ..
+                },
+                Lang::Es,
+            ) => format!(
                 "[-] Remover '{}' ({}) del grupo '{}'",
                 user_display_name, user_identifier, group_title
             ),
-            StagingOp::CreateLibrary { library_title, .. } => {
+            (
+                StagingOp::RemoveUserFromGroup {
+                    group_title,
+                    user_display_name,
+                    user_identifier,
+                    ..
+                },
+                Lang::En,
+            ) => format!(
+                "[-] Remove '{}' ({}) from group '{}'",
+                user_display_name, user_identifier, group_title
+            ),
+            (StagingOp::CreateLibrary { library_title, .. }, Lang::Es) => {
                 format!("[+Bib] Crear biblioteca '{}'", library_title)
             }
-            StagingOp::CreateGroup { group_title, .. } => {
+            (StagingOp::CreateLibrary { library_title, .. }, Lang::En) => {
+                format!("[+Bib] Create library '{}'", library_title)
+            }
+            (StagingOp::CreateGroup { group_title, .. }, Lang::Es) => {
                 format!("[+Grp] Crear grupo SharePoint '{}'", group_title)
             }
-            StagingOp::CreateFolder {
-                library_title,
-                relative_folder_path,
-                ..
-            } => format!(
+            (StagingOp::CreateGroup { group_title, .. }, Lang::En) => {
+                format!("[+Grp] Create SharePoint group '{}'", group_title)
+            }
+            (
+                StagingOp::CreateFolder {
+                    library_title,
+                    relative_folder_path,
+                    ..
+                },
+                Lang::Es,
+            ) => format!(
                 "[+Dir] Crear carpeta '{}/{}'",
                 library_title, relative_folder_path
             ),
-            StagingOp::BreakFolderInheritance {
-                library_title,
-                relative_folder_path,
-                copy_parent_roles,
-                clear_subscopes,
-                ..
-            } => format!(
+            (
+                StagingOp::CreateFolder {
+                    library_title,
+                    relative_folder_path,
+                    ..
+                },
+                Lang::En,
+            ) => format!(
+                "[+Dir] Create folder '{}/{}'",
+                library_title, relative_folder_path
+            ),
+            (
+                StagingOp::BreakFolderInheritance {
+                    library_title,
+                    relative_folder_path,
+                    copy_parent_roles,
+                    clear_subscopes,
+                    ..
+                },
+                Lang::Es,
+            ) => format!(
                 "[Perm] Romper herencia en '{}/{}' (copy={}, clear={})",
                 library_title, relative_folder_path, copy_parent_roles, clear_subscopes
             ),
-            StagingOp::AssignFolderRole {
-                library_title,
-                relative_folder_path,
-                principal_name,
-                role_name,
-                ..
-            } => format!(
+            (
+                StagingOp::BreakFolderInheritance {
+                    library_title,
+                    relative_folder_path,
+                    copy_parent_roles,
+                    clear_subscopes,
+                    ..
+                },
+                Lang::En,
+            ) => format!(
+                "[Perm] Break inheritance on '{}/{}' (copy={}, clear={})",
+                library_title, relative_folder_path, copy_parent_roles, clear_subscopes
+            ),
+            (
+                StagingOp::AssignFolderRole {
+                    library_title,
+                    relative_folder_path,
+                    principal_name,
+                    role_name,
+                    ..
+                },
+                Lang::Es,
+            ) => format!(
                 "[+Rol] Asignar '{}' a '{}' en '{}/{}'",
                 role_name, principal_name, library_title, relative_folder_path
             ),
-            StagingOp::AssignSiteRole {
-                group_title,
-                role_name,
-                ..
-            } => format!(
+            (
+                StagingOp::AssignFolderRole {
+                    library_title,
+                    relative_folder_path,
+                    principal_name,
+                    role_name,
+                    ..
+                },
+                Lang::En,
+            ) => format!(
+                "[+Rol] Grant '{}' to '{}' on '{}/{}'",
+                role_name, principal_name, library_title, relative_folder_path
+            ),
+            (
+                StagingOp::AssignSiteRole {
+                    group_title,
+                    role_name,
+                    ..
+                },
+                Lang::Es,
+            ) => format!(
                 "[+SitioRol] Asignar '{}' al grupo '{}' en el sitio",
                 role_name, group_title
             ),
-            StagingOp::ServerSideCopy {
-                source_server_relative_url,
-                target_folder_server_relative_url,
-                is_folder,
-                ..
-            } => {
+            (
+                StagingOp::AssignSiteRole {
+                    group_title,
+                    role_name,
+                    ..
+                },
+                Lang::En,
+            ) => format!(
+                "[+SitioRol] Grant '{}' to group '{}' on site",
+                role_name, group_title
+            ),
+            (
+                StagingOp::ServerSideCopy {
+                    source_server_relative_url,
+                    target_folder_server_relative_url,
+                    is_folder,
+                    ..
+                },
+                Lang::Es,
+            ) => {
                 let kind = if *is_folder { "Carpeta" } else { "Archivo" };
                 format!(
                     "[Copy {}] '{}' -> '{}'",
                     kind, source_server_relative_url, target_folder_server_relative_url
                 )
             }
-            StagingOp::SetSiteOfflineSync {
-                site_title,
-                exclude_from_offline_client,
-                ..
-            } => {
+            (
+                StagingOp::ServerSideCopy {
+                    source_server_relative_url,
+                    target_folder_server_relative_url,
+                    is_folder,
+                    ..
+                },
+                Lang::En,
+            ) => {
+                let kind = if *is_folder { "Folder" } else { "File" };
+                format!(
+                    "[Copy {}] '{}' -> '{}'",
+                    kind, source_server_relative_url, target_folder_server_relative_url
+                )
+            }
+            (
+                StagingOp::SetSiteOfflineSync {
+                    site_title,
+                    exclude_from_offline_client,
+                    ..
+                },
+                Lang::Es,
+            ) => {
                 if *exclude_from_offline_client {
                     format!(
                         "[-Sync] Bloquear sincronización SharePoint en el sitio '{}'",
@@ -444,12 +603,35 @@ impl StagingOp {
                     )
                 }
             }
-            StagingOp::SetLibraryOfflineSync {
-                library_title,
-                exclude_from_offline_client,
-                apply_view_formatting,
-                ..
-            } => match (*exclude_from_offline_client, *apply_view_formatting) {
+            (
+                StagingOp::SetSiteOfflineSync {
+                    site_title,
+                    exclude_from_offline_client,
+                    ..
+                },
+                Lang::En,
+            ) => {
+                if *exclude_from_offline_client {
+                    format!(
+                        "[-Sync] Block SharePoint sync on site '{}'",
+                        site_title
+                    )
+                } else {
+                    format!(
+                        "[+Sync] Allow SharePoint sync on site '{}'",
+                        site_title
+                    )
+                }
+            }
+            (
+                StagingOp::SetLibraryOfflineSync {
+                    library_title,
+                    exclude_from_offline_client,
+                    apply_view_formatting,
+                    ..
+                },
+                Lang::Es,
+            ) => match (*exclude_from_offline_client, *apply_view_formatting) {
                 (true, true) => format!(
                     "[-Sync] Desactivar sync offline + ocultar acceso directo OneDrive en '{}'",
                     library_title
@@ -467,11 +649,40 @@ impl StagingOp {
                     library_title
                 ),
             },
-            StagingOp::SetLibraryOneDriveShortcuts {
-                library_title,
-                hide_shortcut_button,
-                ..
-            } => {
+            (
+                StagingOp::SetLibraryOfflineSync {
+                    library_title,
+                    exclude_from_offline_client,
+                    apply_view_formatting,
+                    ..
+                },
+                Lang::En,
+            ) => match (*exclude_from_offline_client, *apply_view_formatting) {
+                (true, true) => format!(
+                    "[-Sync] Disable offline sync + hide OneDrive shortcut on '{}'",
+                    library_title
+                ),
+                (true, false) => format!(
+                    "[-Sync] Block SharePoint sync on library '{}'",
+                    library_title
+                ),
+                (false, true) => format!(
+                    "[+Sync] Enable offline sync + show OneDrive shortcut on '{}'",
+                    library_title
+                ),
+                (false, false) => format!(
+                    "[+Sync] Allow SharePoint sync on library '{}'",
+                    library_title
+                ),
+            },
+            (
+                StagingOp::SetLibraryOneDriveShortcuts {
+                    library_title,
+                    hide_shortcut_button,
+                    ..
+                },
+                Lang::Es,
+            ) => {
                 if *hide_shortcut_button {
                     format!(
                         "[-AtajoOD] Ocultar acceso directo a OneDrive en biblioteca '{}'",
@@ -483,6 +694,66 @@ impl StagingOp {
                         library_title
                     )
                 }
+            }
+            (
+                StagingOp::SetLibraryOneDriveShortcuts {
+                    library_title,
+                    hide_shortcut_button,
+                    ..
+                },
+                Lang::En,
+            ) => {
+                if *hide_shortcut_button {
+                    format!(
+                        "[-AtajoOD] Hide OneDrive shortcut on library '{}'",
+                        library_title
+                    )
+                } else {
+                    format!(
+                        "[+AtajoOD] Show OneDrive shortcut on library '{}'",
+                        library_title
+                    )
+                }
+            }
+            (StagingOp::DeleteLibrary { library_title, .. }, Lang::Es) => {
+                format!("[-DEL Bib] Eliminar biblioteca '{}'", library_title)
+            }
+            (StagingOp::DeleteLibrary { library_title, .. }, Lang::En) => {
+                format!("[-DEL Bib] Delete library '{}'", library_title)
+            }
+            (
+                StagingOp::DeleteFolder {
+                    folder_server_relative_url,
+                    ..
+                },
+                Lang::Es,
+            ) => format!("[-DEL Dir] Eliminar carpeta '{}'", folder_server_relative_url),
+            (
+                StagingOp::DeleteFolder {
+                    folder_server_relative_url,
+                    ..
+                },
+                Lang::En,
+            ) => format!("[-DEL Dir] Delete folder '{}'", folder_server_relative_url),
+            (
+                StagingOp::DeleteFile {
+                    file_server_relative_url,
+                    ..
+                },
+                Lang::Es,
+            ) => format!("[-DEL File] Eliminar archivo '{}'", file_server_relative_url),
+            (
+                StagingOp::DeleteFile {
+                    file_server_relative_url,
+                    ..
+                },
+                Lang::En,
+            ) => format!("[-DEL File] Delete file '{}'", file_server_relative_url),
+            (StagingOp::DeleteGroup { group_title, .. }, Lang::Es) => {
+                format!("[-DEL Grp] Eliminar grupo SharePoint '{}'", group_title)
+            }
+            (StagingOp::DeleteGroup { group_title, .. }, Lang::En) => {
+                format!("[-DEL Grp] Delete SharePoint group '{}'", group_title)
             }
         }
     }
@@ -625,6 +896,14 @@ fn default_true() -> bool {
     true
 }
 
+/// Mode for Phase 3 site cloning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CloneMode {
+    #[default]
+    Additive,
+    Destructive,
+}
+
 /// Configuration for Phase 3 full site cloning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloneConfig {
@@ -637,4 +916,8 @@ pub struct CloneConfig {
     pub include_unique_permissions: bool,
     pub overwrite: bool,
     pub note: Option<String>,
+    #[serde(default)]
+    pub mode: CloneMode,
+    #[serde(default)]
+    pub current_actor_upn: Option<String>,
 }

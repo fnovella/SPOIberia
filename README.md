@@ -1,5 +1,7 @@
 # SPOIberia (`spoiberia`)
 
+🇪🇸 Español | [🇬🇧 English](README.en.md)
+
 Aplicación multiplataforma escrita en **Rust** con **arquitectura dual** (**Interfaz TUI interactiva** + **CLI Headless para Agentes Autónomos**) para la gestión de autorizaciones, aprovisionamiento de bibliotecas/carpetas desde matrices externas y clonado completo de sitios en **SharePoint Online (Microsoft 365)** con persistencia transaccional y **Rollback en SQLite**.
 
 ---
@@ -23,7 +25,9 @@ Aplicación multiplataforma escrita en **Rust** con **arquitectura dual** (**Int
   - Ordena automáticamente las carpetas *top-down* por profundidad de ruta para configurar carpetas padre antes que subcarpetas.
 
 ### Fase 3 — Clonado Completo de un Sitio SharePoint en otro
-- Copia integral desde un sitio **Origen** a un sitio **Destino** en el mismo tenant:
+- Copia integral desde un sitio **Origen** a un sitio **Destino** en el mismo tenant, con selector de modo:
+  - **Modo Aditivo (`--mode additive`, por defecto)**: conserva el contenido y grupos previos del destino y añade/sobreescribe lo del origen.
+  - **Modo Destructivo (`--mode destructive`, con aviso notorio y doble confirmación)**: elimina previamente bibliotecas no predeterminadas, carpetas/archivos de la biblioteca predeterminada, grupos personalizados no presentes en origen y miembros actuales de grupos (protegiendo al operador actual en Owners) antes de clonar.
   1. Sincronización de miembros en grupos asociados (`Owners`, `Members`, `Visitors`) y creación de grupos personalizados con sus miembros y roles de sitio.
   2. Creación de bibliotecas de documentos faltantes y **copia Server-Side (`SP.MoveCopyUtil`)** de todas las carpetas y archivos conservando su historial de versiones sin descargar datos por la máquina local.
   3. Replicación *top-down* de los **permisos únicos (herencia rota)** a nivel de carpeta hacia los grupos y usuarios equivalentes del destino.
@@ -43,6 +47,15 @@ Ejecuta `spoiberia` sin argumentos (o `spoiberia tui`):
 ```bash
 spoiberia
 ```
+
+### Idioma de la TUI (`--lang`)
+- **Detección automática (`--lang auto`, por defecto)**: detecta el idioma del sistema operativo en **Linux** (`LC_ALL`/`LC_MESSAGES`/`LANG`), **Windows** (`GetUserDefaultLocaleName`) y **macOS** (`LC_ALL`/`LANG` o `defaults read -g AppleLanguages`). Si el idioma del sistema es español usa **Español**; en cualquier otro caso usa **Inglés**.
+- **Parámetro manual o variable de entorno**:
+  ```bash
+  spoiberia --lang en
+  spoiberia --lang es
+  SPOIBERIA_LANG=en spoiberia
+  ```
 
 ### Atajos de Teclado Principales en la TUI
 - **Global**: `q` (Salir), `?` (Ayuda), `A` (**Aplicar cambios en Staging**), `1`/`2`/`3`/`4` (Cambiar entre pestañas del sitio), `O` (Menú Sync SharePoint / Accesos OneDrive en el sitio y sus bibliotecas).
@@ -105,10 +118,17 @@ spoiberia matrix export \
   --library "Documentos" \
   --out ./permisos-exportados.json
 
-# 7. Fase 3: Clonado Completo de un SharePoint en otro
+# 7. Fase 3: Clonado Completo de un SharePoint en otro (Aditivo por defecto o Destructivo)
 spoiberia clone \
   --source-site "https://contoso.sharepoint.com/sites/PlantillaObra" \
   --target-site "https://contoso.sharepoint.com/sites/NuevaObra" \
+  --dry-run --json
+
+# Modo destructivo (borra contenido, grupos y usuarios previos del destino; requiere --confirm-destructive para ejecutar)
+spoiberia clone \
+  --source-site "https://contoso.sharepoint.com/sites/PlantillaObra" \
+  --target-site "https://contoso.sharepoint.com/sites/NuevaObra" \
+  --mode destructive \
   --dry-run --json
 
 # 8. Fase 4: Control de Sincronización SharePoint y Accesos Directos a OneDrive

@@ -47,6 +47,14 @@ impl StagingQueue {
         self.ops.clear();
     }
 
+    pub fn destructive_ops_count(&self) -> usize {
+        self.ops.iter().filter(|op| op.is_destructive()).count()
+    }
+
+    pub fn has_destructive_ops(&self) -> bool {
+        self.destructive_ops_count() > 0
+    }
+
     pub fn remove_at(&mut self, index: usize) -> Option<StagingOp> {
         if index < self.ops.len() {
             Some(self.ops.remove(index))
@@ -342,8 +350,15 @@ impl StagingQueue {
     }
 
     pub fn build_summary(&self) -> String {
+        self.build_summary_for(crate::i18n::Lang::Es)
+    }
+
+    pub fn build_summary_for(&self, lang: crate::i18n::Lang) -> String {
+        use crate::i18n::Lang;
         if self.ops.is_empty() {
-            return "Sin operaciones pendientes".to_string();
+            return lang
+                .tr("Sin operaciones pendientes", "No pending operations")
+                .to_string();
         }
         let mut adds = 0usize;
         let mut rems = 0usize;
@@ -353,6 +368,7 @@ impl StagingQueue {
         let mut copies = 0usize;
         let mut sync_changes = 0usize;
         let mut shortcut_changes = 0usize;
+        let mut deletes = 0usize;
 
         for op in &self.ops {
             match op {
@@ -368,33 +384,73 @@ impl StagingQueue {
                     sync_changes += 1
                 }
                 StagingOp::SetLibraryOneDriveShortcuts { .. } => shortcut_changes += 1,
+                StagingOp::DeleteLibrary { .. }
+                | StagingOp::DeleteFolder { .. }
+                | StagingOp::DeleteFile { .. }
+                | StagingOp::DeleteGroup { .. } => deletes += 1,
             }
         }
 
         let mut parts = Vec::new();
-        if adds > 0 {
-            parts.push(format!("+{} alta(s)", adds));
-        }
-        if rems > 0 {
-            parts.push(format!("-{} baja(s)", rems));
-        }
-        if groups > 0 {
-            parts.push(format!("+{} grupo(s)", groups));
-        }
-        if folders > 0 {
-            parts.push(format!("+{} carpeta(s)/bib", folders));
-        }
-        if perms > 0 {
-            parts.push(format!("{} permiso(s)", perms));
-        }
-        if copies > 0 {
-            parts.push(format!("{} copia(s) server-side", copies));
-        }
-        if sync_changes > 0 {
-            parts.push(format!("{} cambio(s) sync SharePoint", sync_changes));
-        }
-        if shortcut_changes > 0 {
-            parts.push(format!("{} cambio(s) accesos OneDrive", shortcut_changes));
+        match lang {
+            Lang::Es => {
+                if deletes > 0 {
+                    parts.push(format!("-{} eliminación(es) DESTRUCTIVA(S)", deletes));
+                }
+                if adds > 0 {
+                    parts.push(format!("+{} alta(s)", adds));
+                }
+                if rems > 0 {
+                    parts.push(format!("-{} baja(s)", rems));
+                }
+                if groups > 0 {
+                    parts.push(format!("+{} grupo(s)", groups));
+                }
+                if folders > 0 {
+                    parts.push(format!("+{} carpeta(s)/bib", folders));
+                }
+                if perms > 0 {
+                    parts.push(format!("{} permiso(s)", perms));
+                }
+                if copies > 0 {
+                    parts.push(format!("{} copia(s) server-side", copies));
+                }
+                if sync_changes > 0 {
+                    parts.push(format!("{} cambio(s) sync SharePoint", sync_changes));
+                }
+                if shortcut_changes > 0 {
+                    parts.push(format!("{} cambio(s) accesos OneDrive", shortcut_changes));
+                }
+            }
+            Lang::En => {
+                if deletes > 0 {
+                    parts.push(format!("-{} DESTRUCTIVE deletion(s)", deletes));
+                }
+                if adds > 0 {
+                    parts.push(format!("+{} addition(s)", adds));
+                }
+                if rems > 0 {
+                    parts.push(format!("-{} removal(s)", rems));
+                }
+                if groups > 0 {
+                    parts.push(format!("+{} group(s)", groups));
+                }
+                if folders > 0 {
+                    parts.push(format!("+{} folder(s)/lib", folders));
+                }
+                if perms > 0 {
+                    parts.push(format!("{} permission(s)", perms));
+                }
+                if copies > 0 {
+                    parts.push(format!("{} server-side copy/copies", copies));
+                }
+                if sync_changes > 0 {
+                    parts.push(format!("{} SharePoint sync change(s)", sync_changes));
+                }
+                if shortcut_changes > 0 {
+                    parts.push(format!("{} OneDrive shortcut change(s)", shortcut_changes));
+                }
+            }
         }
         parts.join(", ")
     }
@@ -870,6 +926,62 @@ impl TransactionExecutor {
                     previous_view_formatters: view_backups,
                 })
             }
+            StagingOp::DeleteLibrary {
+                site_url,
+                library_id,
+                library_title,
+            } => {
+                self.spo
+                    .delete_document_library(site_url, library_id)
+                    .await?;
+                Ok(ReversePayload::NoOp {
+                    reason: format!(
+                        "Eliminación destructiva de biblioteca '{}' (no reversible desde SQLite)",
+                        library_title
+                    ),
+                })
+            }
+            StagingOp::DeleteFolder {
+                site_url,
+                folder_server_relative_url,
+            } => {
+                self.spo
+                    .delete_folder(site_url, folder_server_relative_url)
+                    .await?;
+                Ok(ReversePayload::NoOp {
+                    reason: format!(
+                        "Eliminación destructiva de carpeta '{}' (no reversible desde SQLite)",
+                        folder_server_relative_url
+                    ),
+                })
+            }
+            StagingOp::DeleteFile {
+                site_url,
+                file_server_relative_url,
+            } => {
+                self.spo
+                    .delete_file(site_url, file_server_relative_url)
+                    .await?;
+                Ok(ReversePayload::NoOp {
+                    reason: format!(
+                        "Eliminación destructiva de archivo '{}' (no reversible desde SQLite)",
+                        file_server_relative_url
+                    ),
+                })
+            }
+            StagingOp::DeleteGroup {
+                site_url,
+                group_id,
+                group_title,
+            } => {
+                self.spo.delete_group(site_url, *group_id).await?;
+                Ok(ReversePayload::NoOp {
+                    reason: format!(
+                        "Eliminación destructiva de grupo '{}' (no reversible desde SQLite)",
+                        group_title
+                    ),
+                })
+            }
         }
     }
 
@@ -1216,5 +1328,43 @@ mod tests {
         });
         assert!(q.is_empty());
         assert_eq!(q.library_shortcut_staging_state(site, lib_id), None);
+    }
+
+    #[test]
+    fn test_staging_queue_destructive_ops_counting_and_summary() {
+        let mut q = StagingQueue::new();
+        let site = "https://contoso.sharepoint.com/sites/Destino";
+        assert!(!q.has_destructive_ops());
+        assert_eq!(q.destructive_ops_count(), 0);
+
+        q.push(StagingOp::DeleteLibrary {
+            site_url: site.to_string(),
+            library_id: "1111".to_string(),
+            library_title: "Planos".to_string(),
+        });
+        q.push(StagingOp::DeleteFolder {
+            site_url: site.to_string(),
+            folder_server_relative_url: "/sites/Destino/Shared Documents/Vieja".to_string(),
+        });
+        q.push(StagingOp::DeleteFile {
+            site_url: site.to_string(),
+            file_server_relative_url: "/sites/Destino/Shared Documents/old.docx".to_string(),
+        });
+        q.push(StagingOp::DeleteGroup {
+            site_url: site.to_string(),
+            group_id: 42,
+            group_title: "GrupoViejo".to_string(),
+        });
+        q.push(StagingOp::CreateLibrary {
+            site_url: site.to_string(),
+            library_title: "Nueva".to_string(),
+            description: String::new(),
+        });
+
+        assert!(q.has_destructive_ops());
+        assert_eq!(q.destructive_ops_count(), 4);
+        assert!(q
+            .build_summary()
+            .contains("-4 eliminación(es) DESTRUCTIVA(S)"));
     }
 }
