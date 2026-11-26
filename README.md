@@ -18,9 +18,9 @@ Aplicación multiplataforma escrita en **Rust** con **arquitectura dual** (**Int
   - En la TUI, las altas (`[+]` en verde) y bajas (`[-]` en rojo) se acumulan en la **Cola de Staging** y solo se ejecutan al pulsar **`A` (Aplicar)**.
   - Cada lote aplicado registra una **Transacción** en SQLite (`spoiberia.db`) junto con el `reverse_payload` exacto de cada operación, permitiendo hacer **Rollback (Revertir)** de transacciones completas o de operaciones individuales en orden inverso (`LIFO`).
 
-### Fase 2 — Bibliotecas, Carpetas, Permisos Únicos y Matriz Externa (CSV / JSON)
-- Exploración y creación de **Bibliotecas de Documentos** y **Carpetas/Subcarpetas** (en *"Documentos"* / `Shared Documents` o bibliotecas adicionales).
-- Ruptura de herencia de permisos (`BreakRoleInheritance`), **creación automática de grupos de SharePoint si no existen**, y asignación de niveles de permiso (`Read`, `Contribute`, `Edit`, `Full Control` independientes del idioma del sitio).
+### Fase 2 — Bibliotecas, Árbol de Carpetas, Permisos Únicos, Herencia y Matriz Externa (CSV / JSON)
+- Exploración multinivel del árbol de **Bibliotecas de Documentos** y **Carpetas/Subcarpetas** (`Enter` para bajar, `Backspace`/`u` o `..` para subir), con breadcrumb de ruta, profundidad y visualización en vivo de la **cadena de herencia** de cada nivel.
+- Ruptura de herencia de permisos (`BreakRoleInheritance`) con análisis previo de impacto en niveles superiores/inferiores (`CopyParentRoles`, reemplazo automático de roles heredados conflictivos para evitar suma de permisos, aviso de `Limited Access` y `ClearSubscopes`), **creación automática de grupos de SharePoint si no existen**, revocación individual de roles y restauración de herencia con **Rollback LIFO en SQLite**.
 - **Importación y Exportación de Matriz Externa (`.csv` y `.json`)**:
   - Ordena automáticamente las carpetas *top-down* por profundidad de ruta para configurar carpetas padre antes que subcarpetas.
 
@@ -61,7 +61,7 @@ spoiberia
 - **Global**: `q` (Salir), `?` (Ayuda), `A` (**Aplicar cambios en Staging**), `1`/`2`/`3`/`4` (Cambiar entre pestañas del sitio), `O` (Menú Sync SharePoint / Accesos OneDrive en el sitio y sus bibliotecas).
 - **Selector de Sitios**: `↑`/`↓` (Navegar), `Enter` (Abrir sitio), `/` (Filtrar local), `s` (Buscar en el tenant), `u` (Abrir URL manual), `c` (Fijar como sitio Origen para Clonado).
 - **Pestaña 1 (Grupos y Usuarios)**: `Tab`/`←`/`→` (Cambiar panel), `a` (Buscar usuario en directorio M365 y asignar), `d` (Remover usuario), `g` (Crear grupo).
-- **Pestaña 2 (Bibliotecas y Carpetas)**: `o` (Menú Sync SharePoint / Accesos OneDrive en biblioteca seleccionada), `O` (Menú en sitio y todas sus bibliotecas), `n` (Nueva carpeta), `b` (Nueva biblioteca), `p` (Asignar permiso único a carpeta), `i` (Importar matriz CSV/JSON), `e` (Exportar matriz CSV/JSON).
+- **Pestaña 2 (Bibliotecas y Carpetas)**: `Enter` (Entrar en carpeta / subir si `..`), `Backspace`/`u` (Subir nivel), `o` (Menú Sync SharePoint / Accesos OneDrive en biblioteca seleccionada), `O` (Menú en sitio y todas sus bibliotecas), `n` (Nueva carpeta en nivel actual), `b` (Nueva biblioteca), `p` (Asignar permiso único con análisis de herencia), `d` (Revocar rol de carpeta), `x` (Restaurar herencia del padre), `i` (Importar matriz CSV/JSON), `e` (Exportar matriz CSV/JSON).
 - **Pestaña 3 (Clonar Sitio)**: `Espacio` (Marcar/desmarcar opciones), `s` (URL Sitio Origen), `Enter` (Generar plan de clonado en Staging).
 - **Pestaña 4 (Staging e Historial SQLite)**: `A` (Aplicar cola Staging), `R` (**Revertir transacción completa**), `r` (**Revertir operación individual**), `d` (Descartar ítem de Staging), `X` (Vaciar Staging).
 
@@ -98,14 +98,36 @@ spoiberia tx list --json
 spoiberia tx show 1 --json
 spoiberia tx revert 1 --json
 
-# 6. Fase 2: Bibliotecas, Carpetas y Matriz Externa (CSV / JSON)
+# 6. Fase 2: Bibliotecas, Carpetas (multinivel), Herencia y Matriz Externa (CSV / JSON)
+spoiberia folders permissions \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
+  --library "Documentos" \
+  --path "01_Direccion/Confidencial/Subnivel" \
+  --json
+
 spoiberia folders grant \
   --site "https://contoso.sharepoint.com/sites/MiSitio" \
   --library "Documentos" \
   --path "01_Direccion/Confidencial" \
   --group "SPO_Comite_Ejecutivo" \
-  --role "Full Control" \
+  --role "Read" \
+  --copy-parent-roles \
+  --replace-inherited \
   --create-group \
+  --dry-run --json
+
+spoiberia folders revoke \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
+  --library "Documentos" \
+  --path "01_Direccion/Confidencial" \
+  --group "MiSitio Members" \
+  --role "Edit" \
+  --dry-run --json
+
+spoiberia folders reset-inheritance \
+  --site "https://contoso.sharepoint.com/sites/MiSitio" \
+  --library "Documentos" \
+  --path "01_Direccion/Confidencial" \
   --dry-run --json
 
 spoiberia matrix apply \

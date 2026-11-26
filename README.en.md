@@ -18,9 +18,9 @@ Cross-platform **Rust** application with a **dual architecture** (**interactive 
   - In the TUI, additions (`[+]` in green) and removals (`[-]` in red) are queued in **Staging** and only executed when you press **`A` (Apply)**.
   - Each applied batch records a **Transaction** in SQLite (`spoiberia.db`) along with the exact `reverse_payload` for each operation, enabling deterministic **LIFO Rollback** of full transactions or individual operations.
 
-### Phase 2 — Libraries, Folders, Unique Permissions & External Matrix (CSV / JSON)
-- Browse and create **Document Libraries** and **Folders/Subfolders** (in *"Documents"* / `Shared Documents` or custom libraries).
-- Break permission inheritance (`BreakRoleInheritance`), **auto-create missing SharePoint groups**, and grant language-independent permission levels (`Read`, `Contribute`, `Edit`, `Full Control`).
+### Phase 2 — Libraries, Folder Tree, Unique Permissions, Inheritance & External Matrix (CSV / JSON)
+- Multi-level **Document Library** and **Folder/Subfolder** tree navigation (`Enter` to drill down, `Backspace`/`u` or `..` to go up), featuring breadcrumb path, depth badge, and live **ancestor inheritance chain** inspection.
+- Permission inheritance breaking (`BreakRoleInheritance`) with live upward/downward impact analysis (`CopyParentRoles`, automatic replacement of conflicting inherited roles to prevent permission union, `Limited Access` and `ClearSubscopes` warnings), **auto-creation of missing SharePoint groups**, per-role revocation, and parent inheritance reset with **SQLite LIFO Rollback**.
 - **External Matrix Import & Export (`.csv` and `.json`)**:
   - Automatically sorts folders *top-down* by path depth so parent folders are configured before subfolders.
 
@@ -61,7 +61,7 @@ spoiberia
 - **Global**: `q` (Quit), `?` (Help), `A` (**Apply Staging queue**), `1`/`2`/`3`/`4` (Switch site tabs), `O` (Open SharePoint Sync / OneDrive Shortcuts menu for site + all libraries).
 - **Site Selector**: `↑`/`↓` (Navigate), `Enter` (Open site), `/` (Local filter), `s` (Search tenant), `u` (Open manual URL), `c` (Set as Clone Source).
 - **Tab 1 (Groups & Users)**: `Tab`/`←`/`→` (Switch pane), `a` (Search M365 user & queue add), `d` (Remove user), `g` (Create group).
-- **Tab 2 (Libraries & Folders)**: `o` (Open SharePoint Sync / OneDrive Shortcuts menu for selected library), `O` (Site + all libraries), `n` (New folder), `b` (New library), `p` (Grant unique folder permission), `i` (Import CSV/JSON matrix), `e` (Export CSV/JSON matrix).
+- **Tab 2 (Libraries & Folders)**: `Enter` (Open folder / go up if `..`), `Backspace`/`u` (Go up one level), `o` (Open SharePoint Sync / OneDrive Shortcuts menu for selected library), `O` (Site + all libraries), `n` (New folder at current level), `b` (New library), `p` (Grant unique folder permission with inheritance impact analysis), `d` (Revoke folder role), `x` (Reset parent inheritance), `i` (Import CSV/JSON matrix), `e` (Export CSV/JSON matrix).
 - **Tab 3 (Clone Site)**: `Space` (Toggle options, including Additive vs Destructive mode), `s` (Set Source URL), `Enter` (Generate Clone Plan in Staging).
 - **Tab 4 (Staging & SQLite History)**: `A` (Apply Staging queue), `R` (**Revert full transaction**), `r` (**Revert single operation**), `d` (Remove item from Staging), `X` (Clear Staging).
 
@@ -98,14 +98,36 @@ spoiberia tx list --json
 spoiberia tx show 1 --json
 spoiberia tx revert 1 --json
 
-# 6. Phase 2: Libraries, Folders & External Matrix (CSV / JSON)
+# 6. Phase 2: Libraries, Multi-level Folders, Inheritance & External Matrix (CSV / JSON)
+spoiberia folders permissions \
+  --site "https://contoso.sharepoint.com/sites/MySite" \
+  --library "Documents" \
+  --path "01_Exec/Confidential/Sublevel" \
+  --json
+
 spoiberia folders grant \
   --site "https://contoso.sharepoint.com/sites/MySite" \
   --library "Documents" \
   --path "01_Exec/Confidential" \
   --group "SPO_Exec_Committee" \
-  --role "Full Control" \
+  --role "Read" \
+  --copy-parent-roles \
+  --replace-inherited \
   --create-group \
+  --dry-run --json
+
+spoiberia folders revoke \
+  --site "https://contoso.sharepoint.com/sites/MySite" \
+  --library "Documents" \
+  --path "01_Exec/Confidential" \
+  --group "MySite Members" \
+  --role "Edit" \
+  --dry-run --json
+
+spoiberia folders reset-inheritance \
+  --site "https://contoso.sharepoint.com/sites/MySite" \
+  --library "Documents" \
+  --path "01_Exec/Confidential" \
   --dry-run --json
 
 spoiberia matrix apply \

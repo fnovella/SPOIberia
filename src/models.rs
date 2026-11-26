@@ -205,18 +205,143 @@ pub struct SpoFolder {
     pub server_relative_url: String,
     pub relative_path: String,
     pub item_id: Option<i64>,
+    #[serde(default)]
+    pub item_count: i64,
     pub has_unique_role_assignments: bool,
     pub role_assignments: Vec<FolderPermissionEntry>,
 }
 
 /// Permission entry assigned to a folder or list item.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FolderPermissionEntry {
     pub principal_id: i64,
     pub principal_title: String,
     pub principal_login_name: String,
     pub principal_type: String, // "User", "SecurityGroup", "SharePointGroup"
     pub roles: Vec<String>,
+}
+
+/// Security scope information for a library root or ancestor folder along a path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FolderAncestorInfo {
+    /// Empty string `""` for the library root, or relative path (e.g. `"01_Dir"` / `"01_Dir/Sub"`).
+    pub relative_path: String,
+    pub name: String,
+    pub server_relative_url: String,
+    pub has_unique_role_assignments: bool,
+    pub role_assignments: Vec<FolderPermissionEntry>,
+}
+
+/// Resolved inheritance origin for a folder level.
+#[derive(Debug, Clone)]
+pub struct FolderInheritanceSummary {
+    pub inherited_from_label: String,
+    pub inherited_from_path: String,
+    pub source_has_unique_roles: bool,
+    pub inherited_roles: Vec<FolderPermissionEntry>,
+}
+
+impl FolderInheritanceSummary {
+    /// Resolve the nearest ancestor with broken inheritance (`has_unique_role_assignments`),
+    /// falling back to the library root (`ancestors.first()`).
+    pub fn from_ancestors(ancestors: &[FolderAncestorInfo], lang: crate::i18n::Lang) -> Self {
+        let source = ancestors
+            .iter()
+            .rev()
+            .find(|a| a.has_unique_role_assignments)
+            .or_else(|| ancestors.first());
+
+        let Some(src) = source else {
+            return Self {
+                inherited_from_label: lang.tr("Biblioteca", "Library").to_string(),
+                inherited_from_path: String::new(),
+                source_has_unique_roles: false,
+                inherited_roles: Vec::new(),
+            };
+        };
+
+        let label = if src.relative_path.is_empty() {
+            match lang {
+                crate::i18n::Lang::Es => format!("Biblioteca '{}'", src.name),
+                crate::i18n::Lang::En => format!("Library '{}'", src.name),
+            }
+        } else {
+            src.relative_path.clone()
+        };
+
+        Self {
+            inherited_from_label: label,
+            inherited_from_path: src.relative_path.clone(),
+            source_has_unique_roles: src.has_unique_role_assignments,
+            inherited_roles: src.role_assignments.clone(),
+        }
+    }
+}
+
+/// Summary of how breaking/modifying permissions at a lower folder level impacts ancestor/child scopes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PermissionChangeImpact {
+    pub conflicting_roles: Vec<String>,
+    pub will_lose_parent_roles: bool,
+    pub triggers_limited_access_upward: bool,
+    pub wipes_child_unique_scopes: bool,
+    pub disconnects_from_parent: bool,
+}
+
+/// Analyze how granting `new_role` to `principal_name` on a folder interacts with inherited/existing permissions.
+pub fn analyze_permission_change_impact(
+    target_has_unique_roles: bool,
+    target_current_roles: &[FolderPermissionEntry],
+    inheritance: &FolderInheritanceSummary,
+    principal_name: &str,
+    new_role: &str,
+    copy_parent_roles: bool,
+    clear_subscopes: bool,
+) -> PermissionChangeImpact {
+    let trimmed_principal = principal_name.trim();
+    let effective_before: &[FolderPermissionEntry] = if target_has_unique_roles {
+        target_current_roles
+    } else {
+        &inheritance.inherited_roles
+    };
+
+    let matches_principal = |entry: &FolderPermissionEntry| -> bool {
+        !trimmed_principal.is_empty()
+            && (entry.principal_title.eq_ignore_ascii_case(trimmed_principal)
+                || entry.principal_login_name.eq_ignore_ascii_case(trimmed_principal))
+    };
+
+    let conflicting_roles = if target_has_unique_roles || copy_parent_roles {
+        let mut roles = Vec::new();
+        for entry in effective_before {
+            if matches_principal(entry) {
+                for r in &entry.roles {
+                    if !r.eq_ignore_ascii_case(new_role)
+                        && !roles.iter().any(|existing: &String| existing.eq_ignore_ascii_case(r))
+                    {
+                        roles.push(r.clone());
+                    }
+                }
+            }
+        }
+        roles
+    } else {
+        Vec::new()
+    };
+
+    let will_lose_parent_roles =
+        !target_has_unique_roles && !copy_parent_roles && !inheritance.inherited_roles.is_empty();
+
+    let triggers_limited_access_upward =
+        !trimmed_principal.is_empty() && !inheritance.inherited_roles.iter().any(matches_principal);
+
+    PermissionChangeImpact {
+        conflicting_roles,
+        will_lose_parent_roles,
+        triggers_limited_access_upward,
+        wipes_child_unique_scopes: clear_subscopes,
+        disconnects_from_parent: !target_has_unique_roles,
+    }
 }
 
 /// SharePoint Role Definition (Permission Level, e.g. Full Control, Edit, Contribute, Read).
@@ -279,6 +404,19 @@ pub enum StagingOp {
         principal_type: String, // "SharePointGroup", "User", "SecurityGroup"
         role_name: String,
         create_group_if_missing: bool,
+    },
+    RemoveFolderRole {
+        site_url: String,
+        library_title: String,
+        relative_folder_path: String,
+        principal_name: String,
+        principal_type: String,
+        role_name: String,
+    },
+    ResetFolderInheritance {
+        site_url: String,
+        library_title: String,
+        relative_folder_path: String,
     },
     // Phase 3: Site-level role assignment & Server-side copy
     AssignSiteRole {
@@ -355,6 +493,8 @@ impl StagingOp {
             StagingOp::CreateFolder { .. } => "CREATE_FOLDER",
             StagingOp::BreakFolderInheritance { .. } => "BREAK_INHERITANCE",
             StagingOp::AssignFolderRole { .. } => "ASSIGN_FOLDER_ROLE",
+            StagingOp::RemoveFolderRole { .. } => "REMOVE_FOLDER_ROLE",
+            StagingOp::ResetFolderInheritance { .. } => "RESET_INHERITANCE",
             StagingOp::AssignSiteRole { .. } => "ASSIGN_SITE_ROLE",
             StagingOp::ServerSideCopy { .. } => "COPY_SERVER_SIDE_ITEM",
             StagingOp::SetSiteOfflineSync { .. } => "SET_SITE_OFFLINE_SYNC",
@@ -376,6 +516,8 @@ impl StagingOp {
             | StagingOp::CreateFolder { site_url, .. }
             | StagingOp::BreakFolderInheritance { site_url, .. }
             | StagingOp::AssignFolderRole { site_url, .. }
+            | StagingOp::RemoveFolderRole { site_url, .. }
+            | StagingOp::ResetFolderInheritance { site_url, .. }
             | StagingOp::AssignSiteRole { site_url, .. }
             | StagingOp::SetSiteOfflineSync { site_url, .. }
             | StagingOp::SetLibraryOfflineSync { site_url, .. }
@@ -530,6 +672,54 @@ impl StagingOp {
             ) => format!(
                 "[+Rol] Grant '{}' to '{}' on '{}/{}'",
                 role_name, principal_name, library_title, relative_folder_path
+            ),
+            (
+                StagingOp::RemoveFolderRole {
+                    library_title,
+                    relative_folder_path,
+                    principal_name,
+                    role_name,
+                    ..
+                },
+                Lang::Es,
+            ) => format!(
+                "[-Rol] Revocar '{}' de '{}' en '{}/{}'",
+                role_name, principal_name, library_title, relative_folder_path
+            ),
+            (
+                StagingOp::RemoveFolderRole {
+                    library_title,
+                    relative_folder_path,
+                    principal_name,
+                    role_name,
+                    ..
+                },
+                Lang::En,
+            ) => format!(
+                "[-Rol] Revoke '{}' from '{}' on '{}/{}'",
+                role_name, principal_name, library_title, relative_folder_path
+            ),
+            (
+                StagingOp::ResetFolderInheritance {
+                    library_title,
+                    relative_folder_path,
+                    ..
+                },
+                Lang::Es,
+            ) => format!(
+                "[Herencia] Restaurar herencia del padre en '{}/{}'",
+                library_title, relative_folder_path
+            ),
+            (
+                StagingOp::ResetFolderInheritance {
+                    library_title,
+                    relative_folder_path,
+                    ..
+                },
+                Lang::En,
+            ) => format!(
+                "[Inherit] Restore parent inheritance on '{}/{}'",
+                library_title, relative_folder_path
             ),
             (
                 StagingOp::AssignSiteRole {
@@ -797,6 +987,19 @@ pub enum ReversePayload {
         principal_id: i64,
         role_def_id: i64,
     },
+    RestoreFolderRoleAssignment {
+        site_url: String,
+        folder_server_relative_url: String,
+        principal_id: i64,
+        role_def_id: i64,
+    },
+    RestoreFolderUniqueRoles {
+        site_url: String,
+        folder_server_relative_url: String,
+        had_unique_roles_before: bool,
+        #[serde(default)]
+        previous_assignments: Vec<FolderPermissionEntry>,
+    },
     RemoveSiteRoleAssignment {
         site_url: String,
         principal_id: i64,
@@ -920,4 +1123,95 @@ pub struct CloneConfig {
     pub mode: CloneMode,
     #[serde(default)]
     pub current_actor_upn: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::Lang;
+
+    #[test]
+    fn test_folder_inheritance_summary_and_impact_analysis() {
+        let owners = FolderPermissionEntry {
+            principal_id: 3,
+            principal_title: "Site Owners".to_string(),
+            principal_login_name: "Site Owners".to_string(),
+            principal_type: "SharePointGroup".to_string(),
+            roles: vec!["Full Control".to_string()],
+        };
+        let members = FolderPermissionEntry {
+            principal_id: 5,
+            principal_title: "Site Members".to_string(),
+            principal_login_name: "Site Members".to_string(),
+            principal_type: "SharePointGroup".to_string(),
+            roles: vec!["Edit".to_string()],
+        };
+
+        // Chain: Library (root) -> L1 (unique: Owners + Members=Edit) -> L2 (inherits) -> L3 (inherits)
+        let ancestors = vec![
+            FolderAncestorInfo {
+                relative_path: String::new(),
+                name: "Documentos".to_string(),
+                server_relative_url: "/sites/Demo/Shared Documents".to_string(),
+                has_unique_role_assignments: false,
+                role_assignments: vec![owners.clone(), members.clone()],
+            },
+            FolderAncestorInfo {
+                relative_path: "01_Dir".to_string(),
+                name: "01_Dir".to_string(),
+                server_relative_url: "/sites/Demo/Shared Documents/01_Dir".to_string(),
+                has_unique_role_assignments: true,
+                role_assignments: vec![owners.clone(), members.clone()],
+            },
+            FolderAncestorInfo {
+                relative_path: "01_Dir/Sub".to_string(),
+                name: "Sub".to_string(),
+                server_relative_url: "/sites/Demo/Shared Documents/01_Dir/Sub".to_string(),
+                has_unique_role_assignments: false,
+                role_assignments: vec![owners.clone(), members.clone()],
+            },
+        ];
+
+        let summary = FolderInheritanceSummary::from_ancestors(&ancestors, Lang::Es);
+        assert_eq!(summary.inherited_from_path, "01_Dir");
+        assert_eq!(summary.inherited_from_label, "01_Dir");
+        assert!(summary.source_has_unique_roles);
+        assert_eq!(summary.inherited_roles.len(), 2);
+
+        // Falls back to library root when no ancestor has unique roles
+        let root_only = vec![ancestors[0].clone()];
+        let root_summary = FolderInheritanceSummary::from_ancestors(&root_only, Lang::En);
+        assert_eq!(root_summary.inherited_from_path, "");
+        assert_eq!(root_summary.inherited_from_label, "Library 'Documentos'");
+
+        // Downgrading Site Members from Edit to Read with copy_parent_roles=true detects conflicting Edit role
+        let impact_downgrade = analyze_permission_change_impact(
+            false,
+            &[],
+            &summary,
+            "Site Members",
+            "Read",
+            true,
+            false,
+        );
+        assert_eq!(impact_downgrade.conflicting_roles, vec!["Edit".to_string()]);
+        assert!(!impact_downgrade.will_lose_parent_roles);
+        assert!(!impact_downgrade.triggers_limited_access_upward);
+        assert!(impact_downgrade.disconnects_from_parent);
+
+        // Granting to a brand new group with copy_parent_roles=false and clear_subscopes=true
+        let impact_new = analyze_permission_change_impact(
+            false,
+            &[],
+            &summary,
+            "Equipo_Externo",
+            "Read",
+            false,
+            true,
+        );
+        assert!(impact_new.conflicting_roles.is_empty());
+        assert!(impact_new.will_lose_parent_roles);
+        assert!(impact_new.triggers_limited_access_upward);
+        assert!(impact_new.wipes_child_unique_scopes);
+    }
 }

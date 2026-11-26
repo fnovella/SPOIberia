@@ -19,7 +19,7 @@ use crate::auth::AuthManager;
 use crate::cli::{Cli, Commands};
 use crate::db::Database;
 use crate::i18n::Lang;
-use crate::models::StagingOp;
+use crate::models::{analyze_permission_change_impact, StagingOp};
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
@@ -279,7 +279,14 @@ fn handle_site_selector_keys(app: &mut App, key: KeyEvent) {
 fn handle_workspace_keys(app: &mut App, key: KeyEvent) {
     // Global Workspace navigation keys
     match key.code {
-        KeyCode::Esc | KeyCode::Backspace => {
+        KeyCode::Backspace => {
+            if app.tab == WorkspaceTab::LibrariesAndFolders && app.navigate_up_folder() {
+                return;
+            }
+            app.screen = Screen::SiteSelector;
+            return;
+        }
+        KeyCode::Esc => {
             app.screen = Screen::SiteSelector;
             return;
         }
@@ -464,33 +471,53 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
                         move_list_index(app.selected_library_idx, app.libraries.len(), key.code);
                     if next != app.selected_library_idx {
                         app.selected_library_idx = next;
+                        app.current_folder_path.clear();
+                        app.folder_ancestors.clear();
                         if let Some(lib_title) = app.selected_library().map(|l| l.title.clone()) {
-                            app.trigger_load_library_folders(lib_title);
+                            app.trigger_load_library_folders(lib_title, None, None);
                         }
                     }
                 }
             }
             PaneFocus::Right => {
-                if !app.folders.is_empty() {
+                let total = app.folder_list_row_count();
+                if total > 0 {
                     app.selected_folder_idx =
-                        move_list_index(app.selected_folder_idx, app.folders.len(), key.code);
+                        move_list_index(app.selected_folder_idx, total, key.code);
                 }
             }
         },
+        KeyCode::Enter => match app.focus {
+            PaneFocus::Left => {
+                app.focus = PaneFocus::Right;
+            }
+            PaneFocus::Right => {
+                app.navigate_into_selected_folder();
+            }
+        },
+        KeyCode::Char('u') => {
+            app.navigate_up_folder();
+        }
         KeyCode::Char('n') => {
+            let lib_title = app
+                .selected_library()
+                .map(|l| l.title.as_str())
+                .unwrap_or("Documents");
+            let current_loc = if app.current_folder_path.is_empty() {
+                lib_title.to_string()
+            } else {
+                format!("{}/{}", lib_title, app.current_folder_path)
+            };
             app.modal = Modal::TextInput {
-                title: app
-                    .lang
-                    .tr(
-                        "Crear Nueva Carpeta (en Biblioteca Actual)",
-                        "Create New Folder (in Current Library)",
-                    )
-                    .to_string(),
+                title: match app.lang {
+                    Lang::Es => format!("Crear Nueva Carpeta en '{}'", current_loc),
+                    Lang::En => format!("Create New Folder in '{}'", current_loc),
+                },
                 prompt: app
                     .lang
                     .tr(
-                        "Ruta relativa de la carpeta a crear (ej. 01_Direccion/Confidencial):",
-                        "Relative folder path to create (e.g. 01_Exec/Confidential):",
+                        "Nombre o subruta (relativa al nivel actual; empieza con '/' para raíz):",
+                        "Name or subpath (relative to current level; start with '/' for root):",
                     )
                     .to_string(),
                 value: String::new(),
@@ -521,15 +548,14 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
             app.open_sync_menu(SyncMenuScope::SelectedLibrary);
         }
         KeyCode::Char('p') => {
-            let lib_title = app
-                .selected_library()
-                .map(|l| l.title.clone())
-                .unwrap_or_else(|| "Documents".to_string());
-            let rel_path = app
-                .selected_folder()
-                .map(|f| f.relative_path.clone())
-                .unwrap_or_default();
-            if rel_path.is_empty() {
+            let Some((
+                lib_title,
+                rel_path,
+                target_has_unique_roles,
+                target_current_roles,
+                inheritance,
+            )) = app.target_folder_context()
+            else {
                 app.status_toast = Some((
                     app.lang
                         .tr(
@@ -540,16 +566,114 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
                     true,
                 ));
                 return;
-            }
+            };
             app.modal = Modal::GrantFolderPermission {
                 library_title: lib_title,
                 relative_folder_path: rel_path,
+                target_has_unique_roles,
+                target_current_roles,
+                inheritance,
                 group_name: String::new(),
                 role_idx: 2, // Default "Edit"
-                copy_parent_roles: false,
+                copy_parent_roles: true,
+                replace_inherited_roles: true,
                 clear_subscopes: false,
                 create_group_if_missing: true,
                 active_field: 0,
+            };
+        }
+        KeyCode::Char('d') | KeyCode::Delete => {
+            let Some((
+                lib_title,
+                rel_path,
+                target_has_unique_roles,
+                target_current_roles,
+                inheritance,
+            )) = app.target_folder_context()
+            else {
+                app.status_toast = Some((
+                    app.lang
+                        .tr(
+                            "Selecciona primero una carpeta para gestionar sus permisos",
+                            "Select a folder first to manage its permissions",
+                        )
+                        .to_string(),
+                    true,
+                ));
+                return;
+            };
+            let source_entries = if target_has_unique_roles {
+                &target_current_roles
+            } else {
+                &inheritance.inherited_roles
+            };
+            let mut entries = Vec::new();
+            for entry in source_entries {
+                for role in &entry.roles {
+                    entries.push((
+                        entry.principal_title.clone(),
+                        entry.principal_type.clone(),
+                        role.clone(),
+                    ));
+                }
+            }
+            if entries.is_empty() {
+                app.status_toast = Some((
+                    app.lang
+                        .tr(
+                            "No hay asignaciones de permisos visibles para revocar en esta carpeta",
+                            "No visible permission assignments to revoke on this folder",
+                        )
+                        .to_string(),
+                    true,
+                ));
+                return;
+            }
+            app.scroll.modal_folder_perms.set(0);
+            app.modal = Modal::ManageFolderPermissions {
+                library_title: lib_title,
+                relative_folder_path: rel_path,
+                target_has_unique_roles,
+                inheritance,
+                entries,
+                selected_idx: 0,
+            };
+        }
+        KeyCode::Char('x') => {
+            let Some((lib_title, rel_path, target_has_unique_roles, _, inheritance)) =
+                app.target_folder_context()
+            else {
+                app.status_toast = Some((
+                    app.lang
+                        .tr(
+                            "Selecciona primero una carpeta para restaurar su herencia",
+                            "Select a folder first to restore its inheritance",
+                        )
+                        .to_string(),
+                    true,
+                ));
+                return;
+            };
+            if !target_has_unique_roles {
+                app.status_toast = Some((
+                    match app.lang {
+                        Lang::Es => format!(
+                            "La carpeta '{}' ya hereda permisos de {}",
+                            rel_path, inheritance.inherited_from_label
+                        ),
+                        Lang::En => format!(
+                            "Folder '{}' already inherits permissions from {}",
+                            rel_path, inheritance.inherited_from_label
+                        ),
+                    },
+                    false,
+                ));
+                return;
+            }
+            app.modal = Modal::ConfirmResetFolderInheritance {
+                library_title: lib_title,
+                relative_folder_path: rel_path,
+                inheritance,
             };
         }
         KeyCode::Char('i') => {
@@ -594,7 +718,12 @@ fn handle_tab_folders_keys(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('r') => {
             if let Some(lib_title) = app.selected_library().map(|l| l.title.clone()) {
-                app.trigger_load_library_folders(lib_title);
+                let sub = if app.current_folder_path.is_empty() {
+                    None
+                } else {
+                    Some(app.current_folder_path.clone())
+                };
+                app.trigger_load_library_folders(lib_title, sub, None);
             }
         }
         _ => {}
@@ -883,26 +1012,38 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                         }
                     }
                     TextInputKind::CreateFolderRelativePath => {
-                        if !trimmed.is_empty() {
+                        let clean_input = trimmed.trim_matches('/').to_string();
+                        if !clean_input.is_empty() {
                             if let Some(ref site) = app.current_site {
                                 let lib_title = app
                                     .selected_library()
                                     .map(|l| l.title.clone())
                                     .unwrap_or_else(|| "Documents".to_string());
+                                let full_rel_path = if trimmed.starts_with('/')
+                                    || app.current_folder_path.is_empty()
+                                {
+                                    clean_input
+                                } else {
+                                    format!(
+                                        "{}/{}",
+                                        app.current_folder_path.trim_matches('/'),
+                                        clean_input
+                                    )
+                                };
                                 app.staging.push(StagingOp::CreateFolder {
                                     site_url: site.url.clone(),
                                     library_title: lib_title.clone(),
-                                    relative_folder_path: trimmed.clone(),
+                                    relative_folder_path: full_rel_path.clone(),
                                 });
                                 app.status_toast = Some((
                                     match app.lang {
                                         Lang::Es => format!(
                                             "Encolada creación de carpeta '{}/{}'. Pulsa 'A' para Aplicar.",
-                                            lib_title, trimmed
+                                            lib_title, full_rel_path
                                         ),
                                         Lang::En => format!(
                                             "Queued creation of folder '{}/{}'. Press 'A' to Apply.",
-                                            lib_title, trimmed
+                                            lib_title, full_rel_path
                                         ),
                                     },
                                     false,
@@ -1096,35 +1237,47 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
         Modal::GrantFolderPermission {
             library_title,
             relative_folder_path,
+            target_has_unique_roles,
+            target_current_roles,
+            inheritance,
             mut group_name,
             mut role_idx,
             mut copy_parent_roles,
+            mut replace_inherited_roles,
             mut clear_subscopes,
             create_group_if_missing,
             mut active_field,
         } => match key.code {
             KeyCode::Esc => app.modal = Modal::None,
             KeyCode::Tab | KeyCode::Down => {
-                active_field = (active_field + 1) % 4;
+                active_field = (active_field + 1) % 5;
                 app.modal = Modal::GrantFolderPermission {
                     library_title,
                     relative_folder_path,
+                    target_has_unique_roles,
+                    target_current_roles,
+                    inheritance,
                     group_name,
                     role_idx,
                     copy_parent_roles,
+                    replace_inherited_roles,
                     clear_subscopes,
                     create_group_if_missing,
                     active_field,
                 };
             }
             KeyCode::Up => {
-                active_field = active_field.checked_sub(1).unwrap_or(3);
+                active_field = active_field.checked_sub(1).unwrap_or(4);
                 app.modal = Modal::GrantFolderPermission {
                     library_title,
                     relative_folder_path,
+                    target_has_unique_roles,
+                    target_current_roles,
+                    inheritance,
                     group_name,
                     role_idx,
                     copy_parent_roles,
+                    replace_inherited_roles,
                     clear_subscopes,
                     create_group_if_missing,
                     active_field,
@@ -1135,9 +1288,13 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 app.modal = Modal::GrantFolderPermission {
                     library_title,
                     relative_folder_path,
+                    target_has_unique_roles,
+                    target_current_roles,
+                    inheritance,
                     group_name,
                     role_idx,
                     copy_parent_roles,
+                    replace_inherited_roles,
                     clear_subscopes,
                     create_group_if_missing,
                     active_field,
@@ -1148,9 +1305,13 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 app.modal = Modal::GrantFolderPermission {
                     library_title,
                     relative_folder_path,
+                    target_has_unique_roles,
+                    target_current_roles,
+                    inheritance,
                     group_name,
                     role_idx,
                     copy_parent_roles,
+                    replace_inherited_roles,
                     clear_subscopes,
                     create_group_if_missing,
                     active_field,
@@ -1160,14 +1321,20 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 if active_field == 2 {
                     copy_parent_roles = !copy_parent_roles;
                 } else if active_field == 3 {
+                    replace_inherited_roles = !replace_inherited_roles;
+                } else if active_field == 4 {
                     clear_subscopes = !clear_subscopes;
                 }
                 app.modal = Modal::GrantFolderPermission {
                     library_title,
                     relative_folder_path,
+                    target_has_unique_roles,
+                    target_current_roles,
+                    inheritance,
                     group_name,
                     role_idx,
                     copy_parent_roles,
+                    replace_inherited_roles,
                     clear_subscopes,
                     create_group_if_missing,
                     active_field,
@@ -1178,9 +1345,13 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 app.modal = Modal::GrantFolderPermission {
                     library_title,
                     relative_folder_path,
+                    target_has_unique_roles,
+                    target_current_roles,
+                    inheritance,
                     group_name,
                     role_idx,
                     copy_parent_roles,
+                    replace_inherited_roles,
                     clear_subscopes,
                     create_group_if_missing,
                     active_field,
@@ -1191,9 +1362,13 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 app.modal = Modal::GrantFolderPermission {
                     library_title,
                     relative_folder_path,
+                    target_has_unique_roles,
+                    target_current_roles,
+                    inheritance,
                     group_name,
                     role_idx,
                     copy_parent_roles,
+                    replace_inherited_roles,
                     clear_subscopes,
                     create_group_if_missing,
                     active_field,
@@ -1218,6 +1393,28 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                     .copied()
                     .unwrap_or("Read")
                     .to_string();
+                let impact = analyze_permission_change_impact(
+                    target_has_unique_roles,
+                    &target_current_roles,
+                    &inheritance,
+                    &grp,
+                    &role_name,
+                    copy_parent_roles,
+                    clear_subscopes,
+                );
+                let matched_principal_type = if target_has_unique_roles {
+                    &target_current_roles
+                } else {
+                    &inheritance.inherited_roles
+                }
+                .iter()
+                .find(|e| {
+                    e.principal_title.eq_ignore_ascii_case(&grp)
+                        || e.principal_login_name.eq_ignore_ascii_case(&grp)
+                })
+                .map(|e| e.principal_type.clone())
+                .unwrap_or_else(|| "SharePointGroup".to_string());
+
                 if let Some(ref site) = app.current_site {
                     if create_group_if_missing {
                         app.staging.push(StagingOp::CreateGroup {
@@ -1226,19 +1423,33 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                             description: format!("Grupo para carpeta {}", relative_folder_path),
                         });
                     }
-                    app.staging.push(StagingOp::BreakFolderInheritance {
-                        site_url: site.url.clone(),
-                        library_title: library_title.clone(),
-                        relative_folder_path: relative_folder_path.clone(),
-                        copy_parent_roles,
-                        clear_subscopes,
-                    });
+                    if !target_has_unique_roles || clear_subscopes {
+                        app.staging.push(StagingOp::BreakFolderInheritance {
+                            site_url: site.url.clone(),
+                            library_title: library_title.clone(),
+                            relative_folder_path: relative_folder_path.clone(),
+                            copy_parent_roles,
+                            clear_subscopes,
+                        });
+                    }
+                    if replace_inherited_roles {
+                        for old_role in &impact.conflicting_roles {
+                            app.staging.push(StagingOp::RemoveFolderRole {
+                                site_url: site.url.clone(),
+                                library_title: library_title.clone(),
+                                relative_folder_path: relative_folder_path.clone(),
+                                principal_name: grp.clone(),
+                                principal_type: matched_principal_type.clone(),
+                                role_name: old_role.clone(),
+                            });
+                        }
+                    }
                     app.staging.push(StagingOp::AssignFolderRole {
                         site_url: site.url.clone(),
                         library_title: library_title.clone(),
                         relative_folder_path: relative_folder_path.clone(),
                         principal_name: grp.clone(),
-                        principal_type: "SharePointGroup".to_string(),
+                        principal_type: matched_principal_type,
                         role_name: role_name.clone(),
                         create_group_if_missing,
                     });
@@ -1253,6 +1464,124 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) {
                                 role_name, grp, relative_folder_path
                             ),
                         },
+                        false,
+                    ));
+                }
+                app.modal = Modal::None;
+            }
+            _ => {}
+        },
+        Modal::ManageFolderPermissions {
+            library_title,
+            relative_folder_path,
+            target_has_unique_roles,
+            inheritance,
+            entries,
+            mut selected_idx,
+        } => match key.code {
+            KeyCode::Esc => app.modal = Modal::None,
+            KeyCode::Down
+            | KeyCode::Char('j')
+            | KeyCode::Up
+            | KeyCode::Char('k')
+            | KeyCode::PageDown
+            | KeyCode::PageUp
+            | KeyCode::Home
+            | KeyCode::End => {
+                if !entries.is_empty() {
+                    selected_idx = move_list_index(selected_idx, entries.len(), key.code);
+                }
+                app.modal = Modal::ManageFolderPermissions {
+                    library_title,
+                    relative_folder_path,
+                    target_has_unique_roles,
+                    inheritance,
+                    entries,
+                    selected_idx,
+                };
+            }
+            KeyCode::Enter | KeyCode::Char('d') | KeyCode::Delete => {
+                if let (Some(ref site), Some((principal_name, principal_type, role_name))) =
+                    (app.current_site.as_ref(), entries.get(selected_idx))
+                {
+                    if !target_has_unique_roles {
+                        app.staging.push(StagingOp::BreakFolderInheritance {
+                            site_url: site.url.clone(),
+                            library_title: library_title.clone(),
+                            relative_folder_path: relative_folder_path.clone(),
+                            copy_parent_roles: true,
+                            clear_subscopes: false,
+                        });
+                    }
+                    app.staging.push(StagingOp::RemoveFolderRole {
+                        site_url: site.url.clone(),
+                        library_title: library_title.clone(),
+                        relative_folder_path: relative_folder_path.clone(),
+                        principal_name: principal_name.clone(),
+                        principal_type: principal_type.clone(),
+                        role_name: role_name.clone(),
+                    });
+                    app.status_toast = Some((
+                        match app.lang {
+                            Lang::Es => format!(
+                                "✓ Encolada revocación de '{}' para '{}' en '{}'. Pulsa 'A' para Aplicar.",
+                                role_name, principal_name, relative_folder_path
+                            ),
+                            Lang::En => format!(
+                                "✓ Queued revocation of '{}' from '{}' on '{}'. Press 'A' to Apply.",
+                                role_name, principal_name, relative_folder_path
+                            ),
+                        },
+                        false,
+                    ));
+                }
+                app.modal = Modal::None;
+            }
+            _ => {}
+        },
+        Modal::ConfirmResetFolderInheritance {
+            library_title,
+            relative_folder_path,
+            ..
+        } => match key.code {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                app.modal = Modal::None;
+            }
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let Some(ref site) = app.current_site {
+                    app.staging.push(StagingOp::ResetFolderInheritance {
+                        site_url: site.url.clone(),
+                        library_title: library_title.clone(),
+                        relative_folder_path: relative_folder_path.clone(),
+                    });
+                    app.status_toast = Some((
+                        match app.lang {
+                            Lang::Es => format!(
+                                "✓ Encolada restauración de herencia en '{}'. Pulsa 'A' para Aplicar.",
+                                relative_folder_path
+                            ),
+                            Lang::En => format!(
+                                "✓ Queued inheritance reset on '{}'. Press 'A' to Apply.",
+                                relative_folder_path
+                            ),
+                        },
+                        false,
+                    ));
+                }
+                app.modal = Modal::None;
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') if app.lang == Lang::Es => {
+                if let Some(ref site) = app.current_site {
+                    app.staging.push(StagingOp::ResetFolderInheritance {
+                        site_url: site.url.clone(),
+                        library_title: library_title.clone(),
+                        relative_folder_path: relative_folder_path.clone(),
+                    });
+                    app.status_toast = Some((
+                        format!(
+                            "✓ Encolada restauración de herencia en '{}'. Pulsa 'A' para Aplicar.",
+                            relative_folder_path
+                        ),
                         false,
                     ));
                 }

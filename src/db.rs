@@ -544,4 +544,85 @@ mod tests {
             other => panic!("unexpected OneDrive reverse payload: {:?}", other),
         }
     }
+
+    #[test]
+    fn test_sqlite_folder_inheritance_reverse_payload_roundtrip() {
+        use crate::models::FolderPermissionEntry;
+
+        let db = Database::open_in_memory().unwrap();
+        let site = "https://contoso.sharepoint.com/sites/Obra1";
+        let tx_id = db
+            .create_transaction("admin@contoso.com", site, "Obra1", "TUI", None, "Folder perms")
+            .unwrap();
+
+        let rev_restore_role = ReversePayload::RestoreFolderRoleAssignment {
+            site_url: site.to_string(),
+            folder_server_relative_url: "/sites/Obra1/Shared Documents/01_Dir/Sub".to_string(),
+            principal_id: 5,
+            role_def_id: 1073741830,
+        };
+        db.record_operation(
+            tx_id,
+            1,
+            "REMOVE_FOLDER_ROLE",
+            "[-Rol] Revocar 'Edit' de 'Members' en 'Documents/01_Dir/Sub'",
+            "{}",
+            &rev_restore_role,
+            "APPLIED",
+            None,
+        )
+        .unwrap();
+
+        let rev_restore_unique = ReversePayload::RestoreFolderUniqueRoles {
+            site_url: site.to_string(),
+            folder_server_relative_url: "/sites/Obra1/Shared Documents/01_Dir/Sub".to_string(),
+            had_unique_roles_before: true,
+            previous_assignments: vec![FolderPermissionEntry {
+                principal_id: 7,
+                principal_title: "Equipo_Sub".to_string(),
+                principal_login_name: "Equipo_Sub".to_string(),
+                principal_type: "SharePointGroup".to_string(),
+                roles: vec!["Read".to_string()],
+            }],
+        };
+        db.record_operation(
+            tx_id,
+            2,
+            "RESET_INHERITANCE",
+            "[Herencia] Restaurar herencia del padre en 'Documents/01_Dir/Sub'",
+            "{}",
+            &rev_restore_unique,
+            "APPLIED",
+            None,
+        )
+        .unwrap();
+
+        let ops = db.get_transaction_operations(tx_id).unwrap();
+        assert_eq!(ops.len(), 2);
+
+        let p1: ReversePayload = serde_json::from_str(&ops[0].reverse_payload).unwrap();
+        assert!(matches!(
+            p1,
+            ReversePayload::RestoreFolderRoleAssignment {
+                principal_id: 5,
+                role_def_id: 1073741830,
+                ..
+            }
+        ));
+
+        let p2: ReversePayload = serde_json::from_str(&ops[1].reverse_payload).unwrap();
+        match p2 {
+            ReversePayload::RestoreFolderUniqueRoles {
+                had_unique_roles_before,
+                previous_assignments,
+                ..
+            } => {
+                assert!(had_unique_roles_before);
+                assert_eq!(previous_assignments.len(), 1);
+                assert_eq!(previous_assignments[0].principal_title, "Equipo_Sub");
+                assert_eq!(previous_assignments[0].roles, vec!["Read".to_string()]);
+            }
+            other => panic!("unexpected payload: {:?}", other),
+        }
+    }
 }

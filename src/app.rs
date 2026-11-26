@@ -6,8 +6,9 @@ use crate::db::Database;
 use crate::i18n::Lang;
 use crate::importer::MatrixImporter;
 use crate::models::{
-    CloneConfig, CloneMode, DirectoryUser, SpoFolder, SpoGroup, SpoLibrary, SpoSite, SpoUser,
-    StagingOp, TransactionOpRecord, TransactionRecord,
+    CloneConfig, CloneMode, DirectoryUser, FolderAncestorInfo, FolderInheritanceSummary,
+    FolderPermissionEntry, SpoFolder, SpoGroup, SpoLibrary, SpoSite, SpoUser, StagingOp,
+    TransactionOpRecord, TransactionRecord,
 };
 use crate::staging::{ExecutionReport, StagingQueue, TransactionExecutor};
 use std::collections::HashSet;
@@ -63,12 +64,29 @@ pub enum Modal {
     GrantFolderPermission {
         library_title: String,
         relative_folder_path: String,
+        target_has_unique_roles: bool,
+        target_current_roles: Vec<FolderPermissionEntry>,
+        inheritance: FolderInheritanceSummary,
         group_name: String,
         role_idx: usize, // 0=Read, 1=Contribute, 2=Edit, 3=Full Control
         copy_parent_roles: bool,
+        replace_inherited_roles: bool,
         clear_subscopes: bool,
         create_group_if_missing: bool,
-        active_field: usize, // 0=group_name, 1=role, 2=copy_parent, 3=clear_subscopes
+        active_field: usize, // 0=group_name, 1=role, 2=copy_parent, 3=replace_inherited, 4=clear_subscopes
+    },
+    ManageFolderPermissions {
+        library_title: String,
+        relative_folder_path: String,
+        target_has_unique_roles: bool,
+        inheritance: FolderInheritanceSummary,
+        entries: Vec<(String, String, String)>, // (principal_title, principal_type, role_name)
+        selected_idx: usize,
+    },
+    ConfirmResetFolderInheritance {
+        library_title: String,
+        relative_folder_path: String,
+        inheritance: FolderInheritanceSummary,
     },
     ConfirmApplyStaging {
         note: String,
@@ -118,6 +136,9 @@ pub enum AsyncEvent {
         groups: Vec<SpoGroup>,
         initial_members: Vec<SpoUser>,
         libraries: Vec<SpoLibrary>,
+        loaded_library_title: Option<String>,
+        loaded_folder_path: String,
+        initial_ancestors: Vec<FolderAncestorInfo>,
         initial_folders: Vec<SpoFolder>,
         transactions: Vec<TransactionRecord>,
         site_exclude_from_offline_client: Option<bool>,
@@ -128,7 +149,10 @@ pub enum AsyncEvent {
     },
     LibraryFoldersLoaded {
         library_title: String,
+        relative_subpath: String,
+        ancestors: Vec<FolderAncestorInfo>,
         folders: Vec<SpoFolder>,
+        select_folder_name: Option<String>,
     },
     DirectoryUsersFound {
         query: String,
@@ -207,6 +231,8 @@ pub struct App {
     // Tab 2: Libraries & Folders state
     pub libraries: Vec<SpoLibrary>,
     pub selected_library_idx: usize,
+    pub current_folder_path: String, // "" = library root; "Dir/Sub" = nested folder
+    pub folder_ancestors: Vec<FolderAncestorInfo>,
     pub folders: Vec<SpoFolder>,
     pub selected_folder_idx: usize,
 
@@ -244,6 +270,7 @@ pub struct ScrollOffsets {
     pub transactions: std::cell::Cell<usize>,
     pub tx_ops: std::cell::Cell<usize>,
     pub modal_users: std::cell::Cell<usize>,
+    pub modal_folder_perms: std::cell::Cell<usize>,
 }
 
 impl App {
@@ -303,6 +330,8 @@ impl App {
             pane_filter: String::new(),
             libraries: Vec::new(),
             selected_library_idx: 0,
+            current_folder_path: String::new(),
+            folder_ancestors: Vec::new(),
             folders: Vec::new(),
             selected_folder_idx: 0,
             clone_source_url: String::new(),
@@ -356,8 +385,78 @@ impl App {
         self.libraries.get(self.selected_library_idx)
     }
 
+    pub fn is_in_subfolder(&self) -> bool {
+        !self.current_folder_path.is_empty()
+    }
+
+    pub fn folder_list_row_count(&self) -> usize {
+        self.folders.len() + usize::from(self.is_in_subfolder())
+    }
+
+    pub fn is_parent_row_selected(&self) -> bool {
+        self.is_in_subfolder() && self.selected_folder_idx == 0
+    }
+
     pub fn selected_folder(&self) -> Option<&SpoFolder> {
-        self.folders.get(self.selected_folder_idx)
+        if self.is_in_subfolder() {
+            if self.selected_folder_idx == 0 {
+                None
+            } else {
+                self.folders.get(self.selected_folder_idx - 1)
+            }
+        } else {
+            self.folders.get(self.selected_folder_idx)
+        }
+    }
+
+    pub fn current_level_inheritance(&self) -> FolderInheritanceSummary {
+        FolderInheritanceSummary::from_ancestors(&self.folder_ancestors, self.lang)
+    }
+
+    /// Resolve the target folder context for permission operations (`p`, `d`, `x`):
+    /// uses the highlighted child folder if one is selected, or the current folder itself
+    /// when `..` is highlighted inside a subfolder.
+    pub fn target_folder_context(
+        &self,
+    ) -> Option<(
+        String,
+        String,
+        bool,
+        Vec<FolderPermissionEntry>,
+        FolderInheritanceSummary,
+    )> {
+        let lib_title = self
+            .selected_library()
+            .map(|l| l.title.clone())
+            .unwrap_or_else(|| "Documents".to_string());
+
+        if let Some(folder) = self.selected_folder() {
+            let inheritance = self.current_level_inheritance();
+            return Some((
+                lib_title,
+                folder.relative_path.clone(),
+                folder.has_unique_role_assignments,
+                folder.role_assignments.clone(),
+                inheritance,
+            ));
+        }
+
+        if self.is_in_subfolder() {
+            if let Some(cur) = self.folder_ancestors.last() {
+                let parent_slice =
+                    &self.folder_ancestors[..self.folder_ancestors.len().saturating_sub(1)];
+                let parent_inh = FolderInheritanceSummary::from_ancestors(parent_slice, self.lang);
+                return Some((
+                    lib_title,
+                    cur.relative_path.clone(),
+                    cur.has_unique_role_assignments,
+                    cur.role_assignments.clone(),
+                    parent_inh,
+                ));
+            }
+        }
+
+        None
     }
 
     fn resolve_login_target_or_toast(&mut self) -> Option<String> {
@@ -552,6 +651,8 @@ impl App {
         self.groups.clear();
         self.group_members.clear();
         self.libraries.clear();
+        self.current_folder_path.clear();
+        self.folder_ancestors.clear();
         self.folders.clear();
         self.selected_group_idx = 0;
         self.selected_member_idx = 0;
@@ -569,6 +670,8 @@ impl App {
         let db = self.db.clone();
         let tx = self.tx_sender.clone();
         let url = site_url.to_string();
+        let preferred_lib_title = self.selected_library().map(|l| l.title.clone());
+        let preferred_folder_path = self.current_folder_path.clone();
 
         tokio::spawn(async move {
             let (groups_res, libs_res, web_sync_res) = tokio::join!(
@@ -588,19 +691,40 @@ impl App {
                     let libraries = spo
                         .populate_libraries_shortcut_status(&url, libs_res.unwrap_or_default())
                         .await;
-                    let initial_folders = if let Some(first_lib) = libraries.first() {
-                        spo.list_folders(&url, &first_lib.title, None)
-                            .await
-                            .unwrap_or_default()
-                    } else {
-                        Vec::new()
-                    };
+                    let target_lib_title = preferred_lib_title
+                        .filter(|t| libraries.iter().any(|l| l.title.eq_ignore_ascii_case(t)))
+                        .or_else(|| libraries.first().map(|l| l.title.clone()));
+
+                    let (loaded_folder_path, initial_ancestors, initial_folders) =
+                        if let Some(ref lib_title) = target_lib_title {
+                            let sub = if preferred_folder_path.is_empty() {
+                                None
+                            } else {
+                                Some(preferred_folder_path.as_str())
+                            };
+                            match spo.list_folders_with_context(&url, lib_title, sub).await {
+                                Ok((anc, flds)) => (preferred_folder_path, anc, flds),
+                                Err(_) if sub.is_some() => {
+                                    let (anc, flds) = spo
+                                        .list_folders_with_context(&url, lib_title, None)
+                                        .await
+                                        .unwrap_or_default();
+                                    (String::new(), anc, flds)
+                                }
+                                Err(_) => (String::new(), Vec::new(), Vec::new()),
+                            }
+                        } else {
+                            (String::new(), Vec::new(), Vec::new())
+                        };
                     let transactions = db.list_transactions(Some(&url), 50).unwrap_or_default();
                     let site_exclude_from_offline_client = web_sync_res.ok().map(|(_, ex)| ex);
                     let _ = tx.send(AsyncEvent::SiteWorkspaceLoaded {
                         groups,
                         initial_members,
                         libraries,
+                        loaded_library_title: target_lib_title,
+                        loaded_folder_path,
+                        initial_ancestors,
                         initial_folders,
                         transactions,
                         site_exclude_from_offline_client,
@@ -1121,24 +1245,48 @@ impl App {
         });
     }
 
-    pub fn trigger_load_library_folders(&mut self, library_title: String) {
+    pub fn trigger_load_library_folders(
+        &mut self,
+        library_title: String,
+        relative_subpath: Option<String>,
+        select_folder_name: Option<String>,
+    ) {
         let Some(ref site) = self.current_site else {
             return;
         };
+        let clean_sub = relative_subpath
+            .as_deref()
+            .unwrap_or("")
+            .trim_matches('/')
+            .to_string();
+        self.current_folder_path = clean_sub.clone();
         let site_url = site.url.clone();
-        self.busy_message = Some(match self.lang {
-            Lang::Es => format!("Cargando carpetas de '{}'...", library_title),
-            Lang::En => format!("Loading folders from '{}'...", library_title),
+        self.busy_message = Some(match (clean_sub.is_empty(), self.lang) {
+            (true, Lang::Es) => format!("Cargando carpetas de '{}'...", library_title),
+            (true, Lang::En) => format!("Loading folders from '{}'...", library_title),
+            (false, Lang::Es) => format!("Cargando carpetas de '{}/{}'...", library_title, clean_sub),
+            (false, Lang::En) => format!("Loading folders from '{}/{}'...", library_title, clean_sub),
         });
         let spo = self.spo.clone();
         let tx = self.tx_sender.clone();
 
         tokio::spawn(async move {
-            match spo.list_folders(&site_url, &library_title, None).await {
-                Ok(folders) => {
+            let sub_opt = if clean_sub.is_empty() {
+                None
+            } else {
+                Some(clean_sub.as_str())
+            };
+            match spo
+                .list_folders_with_context(&site_url, &library_title, sub_opt)
+                .await
+            {
+                Ok((ancestors, folders)) => {
                     let _ = tx.send(AsyncEvent::LibraryFoldersLoaded {
                         library_title,
+                        relative_subpath: clean_sub,
+                        ancestors,
                         folders,
+                        select_folder_name,
                     });
                 }
                 Err(e) => {
@@ -1146,6 +1294,36 @@ impl App {
                 }
             }
         });
+    }
+
+    pub fn navigate_into_selected_folder(&mut self) {
+        if self.is_parent_row_selected() {
+            self.navigate_up_folder();
+            return;
+        }
+        let Some(lib_title) = self.selected_library().map(|l| l.title.clone()) else {
+            return;
+        };
+        let Some(folder) = self.selected_folder().cloned() else {
+            return;
+        };
+        self.trigger_load_library_folders(lib_title, Some(folder.relative_path), None);
+    }
+
+    pub fn navigate_up_folder(&mut self) -> bool {
+        if self.current_folder_path.is_empty() {
+            return false;
+        }
+        let Some(lib_title) = self.selected_library().map(|l| l.title.clone()) else {
+            return false;
+        };
+        let clean = self.current_folder_path.trim_matches('/').to_string();
+        let (parent_opt, child_name) = match clean.rsplit_once('/') {
+            Some((parent, child)) => (Some(parent.to_string()), child.to_string()),
+            None => (None, clean),
+        };
+        self.trigger_load_library_folders(lib_title, parent_opt, Some(child_name));
+        true
     }
 
     pub fn trigger_search_directory_users(&mut self, query: String) {
@@ -1506,6 +1684,9 @@ impl App {
                 groups,
                 initial_members,
                 libraries,
+                loaded_library_title,
+                loaded_folder_path,
+                initial_ancestors,
                 initial_folders,
                 transactions,
                 site_exclude_from_offline_client,
@@ -1514,7 +1695,21 @@ impl App {
                 self.groups = groups;
                 self.group_members = initial_members;
                 self.libraries = libraries;
+                if let Some(ref title) = loaded_library_title {
+                    if let Some(idx) = self
+                        .libraries
+                        .iter()
+                        .position(|l| l.title.eq_ignore_ascii_case(title))
+                    {
+                        self.selected_library_idx = idx;
+                    }
+                }
+                self.current_folder_path = loaded_folder_path;
+                self.folder_ancestors = initial_ancestors;
                 self.folders = initial_folders;
+                if self.selected_folder_idx >= self.folder_list_row_count() {
+                    self.selected_folder_idx = 0;
+                }
                 self.transactions = transactions;
                 self.site_exclude_from_offline_client = site_exclude_from_offline_client;
                 if let Some(first_tx) = self.transactions.first() {
@@ -1535,13 +1730,27 @@ impl App {
             }
             AsyncEvent::LibraryFoldersLoaded {
                 library_title,
+                relative_subpath,
+                ancestors,
                 folders,
+                select_folder_name,
             } => {
                 self.busy_message = None;
                 if self.selected_library().map(|l| l.title.as_str()) == Some(library_title.as_str())
+                    && self.current_folder_path == relative_subpath
                 {
+                    self.folder_ancestors = ancestors;
                     self.folders = folders;
-                    self.selected_folder_idx = 0;
+                    let parent_offset = usize::from(self.is_in_subfolder());
+                    self.selected_folder_idx = select_folder_name
+                        .as_deref()
+                        .and_then(|name| {
+                            self.folders
+                                .iter()
+                                .position(|f| f.name.eq_ignore_ascii_case(name))
+                        })
+                        .map(|i| i + parent_offset)
+                        .unwrap_or(0);
                 }
             }
             AsyncEvent::DirectoryUsersFound { query, results } => {

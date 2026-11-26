@@ -1,7 +1,8 @@
 use crate::api::spo::SpoClient;
 use crate::api::{check_json_response, send_with_retry};
 use crate::models::{
-    FolderPermissionEntry, SpoFolder, SpoLibrary, SpoRoleDefinition, ViewFormatterBackup,
+    FolderAncestorInfo, FolderPermissionEntry, SpoFolder, SpoLibrary, SpoRoleDefinition,
+    ViewFormatterBackup,
 };
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -123,6 +124,8 @@ struct RawFolder {
     name: String,
     #[serde(rename = "ServerRelativeUrl")]
     server_relative_url: String,
+    #[serde(rename = "ItemCount", default)]
+    item_count: i64,
     #[serde(rename = "ListItemAllFields")]
     list_item_all_fields: Option<RawFolderListItem>,
 }
@@ -800,7 +803,7 @@ impl SpoClient {
         let token = self.token(base).await?;
         let escaped_path = target_folder_url.replace('\'', "''");
         let url = format!(
-            "{}/_api/web/GetFolderByServerRelativePath(decodedurl='{}')/Folders?$select=Name,ServerRelativeUrl,ListItemAllFields/Id,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields",
+            "{}/_api/web/GetFolderByServerRelativePath(decodedurl='{}')/Folders?$select=Name,ServerRelativeUrl,ItemCount,ListItemAllFields/Id,ListItemAllFields/HasUniqueRoleAssignments&$expand=ListItemAllFields",
             base,
             urlencoding::encode(&escaped_path)
         );
@@ -848,6 +851,7 @@ impl SpoClient {
                 server_relative_url: f.server_relative_url,
                 relative_path: rel,
                 item_id,
+                item_count: f.item_count,
                 has_unique_role_assignments: has_unique,
                 role_assignments,
             });
@@ -855,6 +859,149 @@ impl SpoClient {
 
         out.sort_by_key(|a| a.name.to_lowercase());
         Ok(out)
+    }
+
+    /// Fetch `HasUniqueRoleAssignments` and effective role assignments for a Document Library root.
+    pub async fn get_library_inheritance_info(
+        &self,
+        site_url: &str,
+        library_id: &str,
+        library_title: &str,
+        root_url: &str,
+    ) -> Result<FolderAncestorInfo> {
+        let base = site_url.trim_end_matches('/');
+        let token = self.token(base).await?;
+        let uniq_url = format!(
+            "{}/_api/web/lists(guid'{}')?$select=HasUniqueRoleAssignments",
+            base, library_id
+        );
+        let roles_url = format!(
+            "{}/_api/web/lists(guid'{}')/RoleAssignments?$expand=Member,RoleDefinitionBindings",
+            base, library_id
+        );
+
+        let (uniq_resp, roles_resp) = tokio::try_join!(
+            send_with_retry(|| {
+                self.http
+                    .get(&uniq_url)
+                    .bearer_auth(&token)
+                    .header("Accept", SPO_JSON_ACCEPT)
+            }),
+            send_with_retry(|| {
+                self.http
+                    .get(&roles_url)
+                    .bearer_auth(&token)
+                    .header("Accept", SPO_JSON_ACCEPT)
+            })
+        )?;
+
+        let has_unique = if uniq_resp.status().is_success() {
+            uniq_resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("HasUniqueRoleAssignments").and_then(|b| b.as_bool()))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        let role_assignments = if roles_resp.status().is_success() {
+            roles_resp
+                .json::<SpoValueList<RawItemRoleAssignment>>()
+                .await
+                .map(|list| Self::parse_item_role_assignments(list.value))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        Ok(FolderAncestorInfo {
+            relative_path: String::new(),
+            name: library_title.to_string(),
+            server_relative_url: root_url.to_string(),
+            has_unique_role_assignments: has_unique,
+            role_assignments,
+        })
+    }
+
+    /// Fetch `HasUniqueRoleAssignments` and effective role assignments for a folder relative path.
+    pub async fn get_folder_inheritance_info(
+        &self,
+        site_url: &str,
+        library_root: &str,
+        relative_path: &str,
+    ) -> Result<FolderAncestorInfo> {
+        let clean_rel = relative_path.trim_matches('/');
+        let srv_url = format!("{}/{}", library_root.trim_end_matches('/'), clean_rel);
+        let name = clean_rel.rsplit('/').next().unwrap_or(clean_rel).to_string();
+
+        let (has_unique_res, roles_res) = tokio::join!(
+            self.folder_has_unique_roles(site_url, &srv_url),
+            self.get_folder_role_assignments(site_url, &srv_url)
+        );
+
+        Ok(FolderAncestorInfo {
+            relative_path: clean_rel.to_string(),
+            name,
+            server_relative_url: srv_url,
+            has_unique_role_assignments: has_unique_res.unwrap_or(false),
+            role_assignments: roles_res.unwrap_or_default(),
+        })
+    }
+
+    /// Return the full security ancestor chain (`[Library, L1, L1/L2, ...]`) for `relative_subpath`.
+    pub async fn get_folder_inheritance_chain(
+        &self,
+        site_url: &str,
+        library_name: &str,
+        relative_subpath: Option<&str>,
+    ) -> Result<Vec<FolderAncestorInfo>> {
+        let lib = self.resolve_library(site_url, library_name).await?;
+        let lib_root = lib.server_relative_url.trim_end_matches('/').to_string();
+        let clean_sub = relative_subpath.unwrap_or("").trim_matches('/');
+
+        let mut prefixes = Vec::new();
+        if !clean_sub.is_empty() {
+            let mut acc = String::new();
+            for seg in clean_sub.split('/').filter(|s| !s.is_empty()) {
+                if !acc.is_empty() {
+                    acc.push('/');
+                }
+                acc.push_str(seg);
+                prefixes.push(acc.clone());
+            }
+        }
+
+        let root_fut = self.get_library_inheritance_info(
+            site_url,
+            &lib.id,
+            &lib.title,
+            &lib.server_relative_url,
+        );
+        let ancestors_fut = futures::future::try_join_all(prefixes.iter().map(|rel| {
+            let root_ref = lib_root.as_str();
+            async move { self.get_folder_inheritance_info(site_url, root_ref, rel).await }
+        }));
+
+        let (root_info, folder_infos) = tokio::try_join!(root_fut, ancestors_fut)?;
+        let mut chain = Vec::with_capacity(1 + folder_infos.len());
+        chain.push(root_info);
+        chain.extend(folder_infos);
+        Ok(chain)
+    }
+
+    /// Fetch both the ancestor inheritance chain and child folders for a library/subpath concurrently.
+    pub async fn list_folders_with_context(
+        &self,
+        site_url: &str,
+        library_name: &str,
+        relative_subpath: Option<&str>,
+    ) -> Result<(Vec<FolderAncestorInfo>, Vec<SpoFolder>)> {
+        tokio::try_join!(
+            self.get_folder_inheritance_chain(site_url, library_name, relative_subpath),
+            self.list_folders(site_url, library_name, relative_subpath)
+        )
     }
 
     /// Create a folder path hierarchically (creating parent segments top-down if needed).

@@ -201,6 +201,66 @@ impl StagingQueue {
                     }
                 }
             }
+            StagingOp::AssignFolderRole {
+                site_url,
+                library_title,
+                relative_folder_path,
+                principal_name,
+                role_name,
+                ..
+            } => {
+                let target_site = site_url.trim_end_matches('/');
+                if let Some(pos) = self.ops.iter().position(|existing| {
+                    matches!(
+                        existing,
+                        StagingOp::RemoveFolderRole {
+                            site_url: s,
+                            library_title: l,
+                            relative_folder_path: p,
+                            principal_name: pr,
+                            role_name: r,
+                            ..
+                        } if s.trim_end_matches('/').eq_ignore_ascii_case(target_site)
+                            && l.eq_ignore_ascii_case(library_title)
+                            && p.trim_matches('/').eq_ignore_ascii_case(relative_folder_path.trim_matches('/'))
+                            && pr.eq_ignore_ascii_case(principal_name)
+                            && r.eq_ignore_ascii_case(role_name)
+                    )
+                }) {
+                    self.ops.remove(pos);
+                    return;
+                }
+            }
+            StagingOp::RemoveFolderRole {
+                site_url,
+                library_title,
+                relative_folder_path,
+                principal_name,
+                role_name,
+                ..
+            } => {
+                let target_site = site_url.trim_end_matches('/');
+                if let Some(pos) = self.ops.iter().position(|existing| {
+                    matches!(
+                        existing,
+                        StagingOp::AssignFolderRole {
+                            site_url: s,
+                            library_title: l,
+                            relative_folder_path: p,
+                            principal_name: pr,
+                            role_name: r,
+                            ..
+                        } if s.trim_end_matches('/').eq_ignore_ascii_case(target_site)
+                            && l.eq_ignore_ascii_case(library_title)
+                            && p.trim_matches('/').eq_ignore_ascii_case(relative_folder_path.trim_matches('/'))
+                            && pr.eq_ignore_ascii_case(principal_name)
+                            && r.eq_ignore_ascii_case(role_name)
+                    )
+                }) {
+                    self.ops.remove(pos);
+                    return;
+                }
+            }
             _ => {}
         }
 
@@ -378,6 +438,8 @@ impl StagingQueue {
                 StagingOp::CreateLibrary { .. } | StagingOp::CreateFolder { .. } => folders += 1,
                 StagingOp::BreakFolderInheritance { .. }
                 | StagingOp::AssignFolderRole { .. }
+                | StagingOp::RemoveFolderRole { .. }
+                | StagingOp::ResetFolderInheritance { .. }
                 | StagingOp::AssignSiteRole { .. } => perms += 1,
                 StagingOp::ServerSideCopy { .. } => copies += 1,
                 StagingOp::SetSiteOfflineSync { .. } | StagingOp::SetLibraryOfflineSync { .. } => {
@@ -705,6 +767,11 @@ impl TransactionExecutor {
                     .folder_has_unique_roles(site_url, &srv_url)
                     .await
                     .unwrap_or(false);
+                if had_unique_before && !*clear_subscopes {
+                    return Ok(ReversePayload::NoOp {
+                        reason: format!("La carpeta '{}' ya tenía permisos únicos", srv_url),
+                    });
+                }
                 self.spo
                     .break_folder_inheritance(
                         site_url,
@@ -764,6 +831,68 @@ impl TransactionExecutor {
                     folder_server_relative_url: srv_url,
                     principal_id,
                     role_def_id: role_def.id,
+                })
+            }
+            StagingOp::RemoveFolderRole {
+                site_url,
+                library_title,
+                relative_folder_path,
+                principal_name,
+                principal_type,
+                role_name,
+            } => {
+                let (srv_url, _) = self
+                    .spo
+                    .ensure_folder_path(site_url, library_title, relative_folder_path)
+                    .await?;
+                let role_def = self.spo.resolve_role_definition(site_url, role_name).await?;
+                let principal_id = if principal_type.eq_ignore_ascii_case("SharePointGroup") {
+                    self.spo.resolve_group(site_url, principal_name).await?.id
+                } else {
+                    self.spo.ensure_user(site_url, principal_name).await?.id
+                };
+
+                self.spo
+                    .remove_folder_role_assignment(site_url, &srv_url, principal_id, role_def.id)
+                    .await?;
+
+                Ok(ReversePayload::RestoreFolderRoleAssignment {
+                    site_url: site_url.clone(),
+                    folder_server_relative_url: srv_url,
+                    principal_id,
+                    role_def_id: role_def.id,
+                })
+            }
+            StagingOp::ResetFolderInheritance {
+                site_url,
+                library_title,
+                relative_folder_path,
+            } => {
+                let (srv_url, _) = self
+                    .spo
+                    .ensure_folder_path(site_url, library_title, relative_folder_path)
+                    .await?;
+                let had_unique_before = self
+                    .spo
+                    .folder_has_unique_roles(site_url, &srv_url)
+                    .await
+                    .unwrap_or(false);
+                let previous_assignments = if had_unique_before {
+                    self.spo
+                        .get_folder_role_assignments(site_url, &srv_url)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                if had_unique_before {
+                    self.spo.reset_folder_inheritance(site_url, &srv_url).await?;
+                }
+                Ok(ReversePayload::RestoreFolderUniqueRoles {
+                    site_url: site_url.clone(),
+                    folder_server_relative_url: srv_url,
+                    had_unique_roles_before: had_unique_before,
+                    previous_assignments,
                 })
             }
             StagingOp::AssignSiteRole {
@@ -1154,6 +1283,55 @@ impl TransactionExecutor {
                     )
                     .await
             }
+            ReversePayload::RestoreFolderRoleAssignment {
+                site_url,
+                folder_server_relative_url,
+                principal_id,
+                role_def_id,
+            } => {
+                self.spo
+                    .add_folder_role_assignment(
+                        site_url,
+                        folder_server_relative_url,
+                        *principal_id,
+                        *role_def_id,
+                    )
+                    .await
+            }
+            ReversePayload::RestoreFolderUniqueRoles {
+                site_url,
+                folder_server_relative_url,
+                had_unique_roles_before,
+                previous_assignments,
+            } => {
+                if *had_unique_roles_before {
+                    self.spo
+                        .break_folder_inheritance(
+                            site_url,
+                            folder_server_relative_url,
+                            false,
+                            false,
+                        )
+                        .await?;
+                    for entry in previous_assignments {
+                        for role_name in &entry.roles {
+                            if let Ok(role_def) =
+                                self.spo.resolve_role_definition(site_url, role_name).await
+                            {
+                                self.spo
+                                    .add_folder_role_assignment(
+                                        site_url,
+                                        folder_server_relative_url,
+                                        entry.principal_id,
+                                        role_def.id,
+                                    )
+                                    .await?;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
             ReversePayload::RemoveSiteRoleAssignment {
                 site_url,
                 principal_id,
@@ -1366,5 +1544,42 @@ mod tests {
         assert!(q
             .build_summary()
             .contains("-4 eliminación(es) DESTRUCTIVA(S)"));
+    }
+
+    #[test]
+    fn test_staging_queue_folder_role_neutralization_and_summary() {
+        let mut q = StagingQueue::new();
+        let site = "https://contoso.sharepoint.com/sites/Test";
+
+        q.push(StagingOp::AssignFolderRole {
+            site_url: site.to_string(),
+            library_title: "Documents".to_string(),
+            relative_folder_path: "01_Dir/Sub".to_string(),
+            principal_name: "Site Members".to_string(),
+            principal_type: "SharePointGroup".to_string(),
+            role_name: "Read".to_string(),
+            create_group_if_missing: false,
+        });
+        assert_eq!(q.len(), 1);
+
+        // Opposite RemoveFolderRole cancels out the pending AssignFolderRole
+        q.push(StagingOp::RemoveFolderRole {
+            site_url: site.to_string(),
+            library_title: "Documents".to_string(),
+            relative_folder_path: "/01_Dir/Sub/".to_string(),
+            principal_name: "site members".to_string(),
+            principal_type: "SharePointGroup".to_string(),
+            role_name: "read".to_string(),
+        });
+        assert!(q.is_empty());
+
+        // ResetFolderInheritance counts under permissions in summary
+        q.push(StagingOp::ResetFolderInheritance {
+            site_url: site.to_string(),
+            library_title: "Documents".to_string(),
+            relative_folder_path: "01_Dir/Sub".to_string(),
+        });
+        assert_eq!(q.len(), 1);
+        assert!(q.build_summary().contains("1 permiso(s)"));
     }
 }

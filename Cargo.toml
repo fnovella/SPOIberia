@@ -1,6 +1,6 @@
 [package]
 name = "spoiberia"
-version = "0.8.5"
+version = "0.9.0"
 edition = "2021"
 description = "SharePoint Online Management, Provisioning & Cloning — TUI & Agent-Ready CLI in Rust"
 authors = ["Javier Novella <fnovella@gmail.com>"]

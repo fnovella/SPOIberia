@@ -261,6 +261,7 @@ impl SpoClient {
                         server_relative_url: file_ref,
                         relative_path: rel_path,
                         item_id: Some(item.id),
+                        item_count: 0,
                         has_unique_role_assignments: true,
                         role_assignments: assignments,
                     });

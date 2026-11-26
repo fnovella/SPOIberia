@@ -4,7 +4,10 @@ use crate::auth::AuthManager;
 use crate::cloner::SiteClonerEngine;
 use crate::db::Database;
 use crate::importer::MatrixImporter;
-use crate::models::{CloneConfig, CloneMode, SiteSyncStatus, StagingOp};
+use crate::models::{
+    analyze_permission_change_impact, CloneConfig, CloneMode, FolderInheritanceSummary,
+    SiteSyncStatus, StagingOp,
+};
 use crate::staging::{ExecutionReport, StagingQueue, TransactionExecutor};
 use anyhow::Result;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
@@ -406,8 +409,53 @@ pub enum FoldersCommand {
         create_group: bool,
         #[arg(long = "copy-parent-roles", default_value_t = false)]
         copy_parent_roles: bool,
+        #[arg(long = "replace-inherited", default_value_t = false)]
+        replace_inherited: bool,
         #[arg(long = "clear-subscopes", default_value_t = false)]
         clear_subscopes: bool,
+        #[arg(long = "note")]
+        note: Option<String>,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+    /// Consulta la cadena de herencia de permisos y roles efectivos de una carpeta (cualquier nivel)
+    Permissions {
+        #[arg(long = "site")]
+        site: String,
+        #[arg(long = "library", default_value = "Documents")]
+        library: String,
+        #[arg(long = "path", default_value = "")]
+        path: String,
+    },
+    /// Revoca un nivel de permiso de un grupo/usuario sobre una carpeta (rompe herencia copiando roles padre si hereda)
+    Revoke {
+        #[arg(long = "site")]
+        site: String,
+        #[arg(long = "library", default_value = "Documents")]
+        library: String,
+        #[arg(long = "path")]
+        path: String,
+        #[arg(long = "group")]
+        group: String,
+        #[arg(long = "role")]
+        role: String,
+        #[arg(long = "principal-type", default_value = "SharePointGroup")]
+        principal_type: String,
+        #[arg(long = "break-inheritance", default_value_t = true)]
+        break_inheritance: bool,
+        #[arg(long = "note")]
+        note: Option<String>,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+    /// Restaura la herencia de permisos del nivel padre eliminando los permisos únicos de una carpeta
+    ResetInheritance {
+        #[arg(long = "site")]
+        site: String,
+        #[arg(long = "library", default_value = "Documents")]
+        library: String,
+        #[arg(long = "path")]
+        path: String,
         #[arg(long = "note")]
         note: Option<String>,
         #[arg(long = "dry-run")]
@@ -962,24 +1010,50 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                 library,
                 path,
             } => {
-                let folders = spo.list_folders(site, library, path.as_deref()).await?;
+                let (ancestors, folders) = spo
+                    .list_folders_with_context(site, library, path.as_deref())
+                    .await?;
+                let inh = FolderInheritanceSummary::from_ancestors(&ancestors, crate::i18n::Lang::Es);
                 print_output(&folders, format, || {
-                    println!("{:<34} | {:<14} | PERMISOS ASIGNADOS", "CARPETA (RUTA RELATIVA)", "HERENCIA ROTA");
-                    println!("{}", "-".repeat(95));
+                    println!(
+                        "Herencia actual: {} | Nivel: {}",
+                        inh.inherited_from_label,
+                        path.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("(Raíz)")
+                    );
+                    println!(
+                        "{:<34} | {:<22} | PERMISOS EFECTIVOS",
+                        "CARPETA (RUTA RELATIVA)", "HERENCIA"
+                    );
+                    println!("{}", "-".repeat(100));
                     for f in &folders {
-                        let perms_str = if f.role_assignments.is_empty() {
-                            "(Hereda del padre)".to_string()
+                        let perms_source = if f.has_unique_role_assignments {
+                            &f.role_assignments
                         } else {
-                            f.role_assignments
+                            &inh.inherited_roles
+                        };
+                        let perms_str = if perms_source.is_empty() {
+                            format!("(Hereda de {})", inh.inherited_from_label)
+                        } else {
+                            let joined = perms_source
                                 .iter()
                                 .map(|r| format!("{}: [{}]", r.principal_title, r.roles.join(",")))
                                 .collect::<Vec<_>>()
-                                .join("; ")
+                                .join("; ");
+                            if f.has_unique_role_assignments {
+                                joined
+                            } else {
+                                format!("(↳) {}", joined)
+                            }
+                        };
+                        let inherit_col = if f.has_unique_role_assignments {
+                            "Sí (Únicos)".to_string()
+                        } else {
+                            format!("↳ {}", truncate(&inh.inherited_from_label, 19))
                         };
                         println!(
-                            "{:<34} | {:<14} | {}",
+                            "{:<34} | {:<22} | {}",
                             truncate(&f.relative_path, 34),
-                            if f.has_unique_role_assignments { "Sí (Únicos)" } else { "No" },
+                            inherit_col,
                             perms_str
                         );
                     }
@@ -1012,6 +1086,7 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                 principal_type,
                 create_group,
                 copy_parent_roles,
+                replace_inherited,
                 clear_subscopes,
                 note,
                 dry_run,
@@ -1036,6 +1111,63 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                     copy_parent_roles: *copy_parent_roles,
                     clear_subscopes: *clear_subscopes,
                 });
+
+                if *replace_inherited {
+                    if let Ok(chain) = spo
+                        .get_folder_inheritance_chain(site, library, Some(path))
+                        .await
+                    {
+                        let (target_unique, target_roles, parent_inh) =
+                            if let Some(last) = chain.last().filter(|a| !a.relative_path.is_empty())
+                            {
+                                if last.has_unique_role_assignments {
+                                    let p_inh = FolderInheritanceSummary::from_ancestors(
+                                        &chain[..chain.len().saturating_sub(1)],
+                                        crate::i18n::Lang::Es,
+                                    );
+                                    (true, last.role_assignments.clone(), p_inh)
+                                } else {
+                                    (
+                                        false,
+                                        Vec::new(),
+                                        FolderInheritanceSummary::from_ancestors(
+                                            &chain,
+                                            crate::i18n::Lang::Es,
+                                        ),
+                                    )
+                                }
+                            } else {
+                                (
+                                    false,
+                                    Vec::new(),
+                                    FolderInheritanceSummary::from_ancestors(
+                                        &chain,
+                                        crate::i18n::Lang::Es,
+                                    ),
+                                )
+                            };
+                        let impact = analyze_permission_change_impact(
+                            target_unique,
+                            &target_roles,
+                            &parent_inh,
+                            group,
+                            role,
+                            *copy_parent_roles,
+                            *clear_subscopes,
+                        );
+                        for old_role in impact.conflicting_roles {
+                            q.push(StagingOp::RemoveFolderRole {
+                                site_url: site.clone(),
+                                library_title: library.clone(),
+                                relative_folder_path: path.clone(),
+                                principal_name: group.clone(),
+                                principal_type: principal_type.clone(),
+                                role_name: old_role,
+                            });
+                        }
+                    }
+                }
+
                 q.push(StagingOp::AssignFolderRole {
                     site_url: site.clone(),
                     library_title: library.clone(),
@@ -1046,6 +1178,142 @@ pub async fn run_cli_command(cli: &Cli, cmd: &Commands) -> Result<()> {
                     create_group_if_missing: *create_group,
                 });
 
+                let report = executor
+                    .apply_queue(&q, &actor_upn, site, site, "CLI", note.as_deref(), *dry_run)
+                    .await?;
+                print_execution_report(&report, format)?;
+            }
+            FoldersCommand::Permissions {
+                site,
+                library,
+                path,
+            } => {
+                let sub = if path.trim().is_empty() {
+                    None
+                } else {
+                    Some(path.as_str())
+                };
+                let chain = spo
+                    .get_folder_inheritance_chain(site, library, sub)
+                    .await?;
+                let target = chain.last().cloned();
+                let is_unique = target
+                    .as_ref()
+                    .map(|t| t.has_unique_role_assignments)
+                    .unwrap_or(false);
+                let parent_slice = if is_unique && chain.len() > 1 {
+                    &chain[..chain.len() - 1]
+                } else {
+                    &chain[..]
+                };
+                let inh =
+                    FolderInheritanceSummary::from_ancestors(parent_slice, crate::i18n::Lang::Es);
+                let effective_roles = if is_unique {
+                    target
+                        .as_ref()
+                        .map(|t| t.role_assignments.clone())
+                        .unwrap_or_default()
+                } else {
+                    inh.inherited_roles.clone()
+                };
+                let payload = json!({
+                    "site_url": site,
+                    "library": library,
+                    "path": path,
+                    "has_unique_role_assignments": is_unique,
+                    "inherited_from": if is_unique { serde_json::Value::Null } else { json!(inh.inherited_from_label) },
+                    "effective_roles": effective_roles,
+                    "ancestors": chain,
+                });
+                print_output(&payload, format, || {
+                    println!(
+                        "Carpeta: {}/{} | Herencia rota: {}",
+                        library,
+                        if path.trim().is_empty() { "(Raíz)" } else { path.trim() },
+                        if is_unique { "Sí (Únicos)" } else { "No (Heredados)" }
+                    );
+                    if !is_unique {
+                        println!("Hereda de: {}", inh.inherited_from_label);
+                    }
+                    println!("\nCadena de ancestros:");
+                    println!("{:<32} | {:<10} | ROLES", "NIVEL", "ÚNICOS");
+                    println!("{}", "-".repeat(90));
+                    for anc in &chain {
+                        let lvl = if anc.relative_path.is_empty() {
+                            format!("[Biblioteca] {}", anc.name)
+                        } else {
+                            anc.relative_path.clone()
+                        };
+                        let roles_s = anc
+                            .role_assignments
+                            .iter()
+                            .map(|r| format!("{}: [{}]", r.principal_title, r.roles.join(",")))
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        println!(
+                            "{:<32} | {:<10} | {}",
+                            truncate(&lvl, 32),
+                            if anc.has_unique_role_assignments { "Sí" } else { "No" },
+                            roles_s
+                        );
+                    }
+                })?;
+            }
+            FoldersCommand::Revoke {
+                site,
+                library,
+                path,
+                group,
+                role,
+                principal_type,
+                break_inheritance,
+                note,
+                dry_run,
+            } => {
+                let mut q = StagingQueue::new();
+                if *break_inheritance {
+                    let already_unique = spo
+                        .get_folder_inheritance_chain(site, library, Some(path))
+                        .await
+                        .ok()
+                        .and_then(|c| c.last().map(|a| a.has_unique_role_assignments))
+                        .unwrap_or(false);
+                    if !already_unique {
+                        q.push(StagingOp::BreakFolderInheritance {
+                            site_url: site.clone(),
+                            library_title: library.clone(),
+                            relative_folder_path: path.clone(),
+                            copy_parent_roles: true,
+                            clear_subscopes: false,
+                        });
+                    }
+                }
+                q.push(StagingOp::RemoveFolderRole {
+                    site_url: site.clone(),
+                    library_title: library.clone(),
+                    relative_folder_path: path.clone(),
+                    principal_name: group.clone(),
+                    principal_type: principal_type.clone(),
+                    role_name: role.clone(),
+                });
+                let report = executor
+                    .apply_queue(&q, &actor_upn, site, site, "CLI", note.as_deref(), *dry_run)
+                    .await?;
+                print_execution_report(&report, format)?;
+            }
+            FoldersCommand::ResetInheritance {
+                site,
+                library,
+                path,
+                note,
+                dry_run,
+            } => {
+                let mut q = StagingQueue::new();
+                q.push(StagingOp::ResetFolderInheritance {
+                    site_url: site.clone(),
+                    library_title: library.clone(),
+                    relative_folder_path: path.clone(),
+                });
                 let report = executor
                     .apply_queue(&q, &actor_upn, site, site, "CLI", note.as_deref(), *dry_run)
                     .await?;
@@ -1923,5 +2191,99 @@ mod tests {
             sync_help.contains("\x1b[33m") && sync_help.contains("\x1b[36m"),
             "subcommand help should inherit yellow header and cyan literal ANSI codes"
         );
+    }
+
+    #[test]
+    fn test_folders_tree_and_inheritance_cli_parsing() {
+        let perms = Cli::try_parse_from([
+            "spoiberia",
+            "folders",
+            "permissions",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--library",
+            "Documents",
+            "--path",
+            "01_Dir/Sub/Deep",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            perms.command,
+            Some(Commands::Folders {
+                action: FoldersCommand::Permissions { .. }
+            })
+        ));
+
+        let grant = Cli::try_parse_from([
+            "spoiberia",
+            "folders",
+            "grant",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--path",
+            "01_Dir/Sub",
+            "--group",
+            "Site Members",
+            "--role",
+            "Read",
+            "--copy-parent-roles",
+            "--replace-inherited",
+        ])
+        .unwrap();
+        assert!(matches!(
+            grant.command,
+            Some(Commands::Folders {
+                action: FoldersCommand::Grant {
+                    copy_parent_roles: true,
+                    replace_inherited: true,
+                    ..
+                }
+            })
+        ));
+
+        let revoke = Cli::try_parse_from([
+            "spoiberia",
+            "folders",
+            "revoke",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--path",
+            "01_Dir/Sub",
+            "--group",
+            "Site Members",
+            "--role",
+            "Edit",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            revoke.command,
+            Some(Commands::Folders {
+                action: FoldersCommand::Revoke {
+                    break_inheritance: true,
+                    dry_run: true,
+                    ..
+                }
+            })
+        ));
+
+        let reset = Cli::try_parse_from([
+            "spoiberia",
+            "folders",
+            "reset-inheritance",
+            "--site",
+            "https://contoso.sharepoint.com/sites/Test",
+            "--path",
+            "01_Dir/Sub",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            reset.command,
+            Some(Commands::Folders {
+                action: FoldersCommand::ResetInheritance { dry_run: true, .. }
+            })
+        ));
     }
 }
