@@ -7,6 +7,7 @@ use crate::importer::MatrixImporter;
 use crate::models::{CloneConfig, CloneMode, SiteSyncStatus, StagingOp};
 use crate::staging::{ExecutionReport, StagingQueue, TransactionExecutor};
 use anyhow::Result;
+use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::json;
@@ -29,10 +30,23 @@ pub enum CloneModeArg {
     Destructive,
 }
 
+/// Color palette for CLI help and error output across all commands and subcommands.
+pub fn cli_styles() -> Styles {
+    Styles::styled()
+        .header(AnsiColor::Yellow.on_default() | Effects::BOLD | Effects::UNDERLINE)
+        .usage(AnsiColor::Yellow.on_default() | Effects::BOLD | Effects::UNDERLINE)
+        .literal(AnsiColor::Cyan.on_default() | Effects::BOLD)
+        .placeholder(AnsiColor::Green.on_default())
+        .valid(AnsiColor::Green.on_default() | Effects::BOLD)
+        .invalid(AnsiColor::Yellow.on_default() | Effects::BOLD)
+        .error(AnsiColor::Red.on_default() | Effects::BOLD)
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "spoiberia",
     version,
+    styles = cli_styles(),
     about = "SPOIberia — Gestión de Autorizaciones, Aprovisionamiento de Carpetas y Clonado en SharePoint Online (TUI + Agent CLI)"
 )]
 pub struct Cli {
@@ -1879,5 +1893,35 @@ mod tests {
 
         let cli_auto = Cli::try_parse_from(["spoiberia"]).unwrap();
         assert_eq!(cli_auto.lang, crate::i18n::LangArg::Auto);
+    }
+
+    #[test]
+    fn test_help_output_is_colorized() {
+        let mut cmd = Cli::command();
+        cmd.build();
+
+        let root_help = cmd.render_long_help().ansi().to_string();
+        assert!(root_help.contains("\x1b["), "root help should contain ANSI escapes");
+        assert!(
+            root_help.contains("\x1b[33m")
+                && root_help.contains("\x1b[36m")
+                && root_help.contains("\x1b[32m"),
+            "root help should contain yellow header, cyan literal, and green placeholder ANSI codes"
+        );
+
+        let sync_help = cmd
+            .find_subcommand_mut("sync")
+            .expect("sync subcommand exists")
+            .render_long_help()
+            .ansi()
+            .to_string();
+        assert!(
+            sync_help.contains("\x1b["),
+            "subcommand help should inherit ANSI escapes"
+        );
+        assert!(
+            sync_help.contains("\x1b[33m") && sync_help.contains("\x1b[36m"),
+            "subcommand help should inherit yellow header and cyan literal ANSI codes"
+        );
     }
 }
