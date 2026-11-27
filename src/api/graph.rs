@@ -1,4 +1,4 @@
-use crate::api::{check_json_response, send_with_retry};
+use crate::api::{check_json_response, send_with_retry, validate_next_link};
 use crate::auth::AuthManager;
 use crate::models::{DirectoryUser, SiteRole, SpoSite};
 use anyhow::Result;
@@ -127,6 +127,9 @@ impl GraphClient {
                 Err(_) => break,
             };
             items.extend(page.value);
+            if let Some(ref nl) = page.next_link {
+                validate_next_link("https://graph.microsoft.com", nl)?;
+            }
             next_url = page.next_link;
         }
 
@@ -250,7 +253,13 @@ impl GraphClient {
                     is_site_admin: false,
                 });
             }
-            next_url = page.next_link;
+            next_url = match page.next_link {
+                Some(nl) => {
+                    validate_next_link("https://graph.microsoft.com", &nl)?;
+                    Some(nl)
+                }
+                None => None,
+            };
         }
 
         Ok(sites)
@@ -260,7 +269,6 @@ impl GraphClient {
     /// display name, email, or UPN (case-insensitive).
     pub fn matches_all_query_tokens(user: &DirectoryUser, query: &str) -> bool {
         let tokens: Vec<String> = query
-            .trim()
             .split_whitespace()
             .map(|t| t.to_lowercase())
             .filter(|t| !t.is_empty())

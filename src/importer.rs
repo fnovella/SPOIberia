@@ -88,6 +88,9 @@ impl MatrixImporter {
                 }
             }
         }
+        for s in &specs {
+            crate::api::validate_relative_folder_path(&s.relative_folder_path)?;
+        }
 
         Self::sort_specs_top_down(&mut specs);
         Ok(specs)
@@ -111,6 +114,7 @@ impl MatrixImporter {
             if rel_path.is_empty() {
                 continue;
             }
+            crate::api::validate_relative_folder_path(&rel_path)?;
             let lib = match default_library_override.filter(|s| !s.trim().is_empty()) {
                 Some(ov) if row.Library.is_empty() || row.Library.eq_ignore_ascii_case("Documents") => {
                     ov.to_string()

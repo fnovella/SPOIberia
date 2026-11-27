@@ -143,7 +143,7 @@ impl SiteClonerEngine {
             .iter()
             .find(|g| g.kind == GroupKind::AssociatedVisitor);
 
-        let mut tgt_group_by_title: HashMap<String, SpoGroup> = tgt_groups
+        let tgt_group_by_title: HashMap<String, SpoGroup> = tgt_groups
             .iter()
             .map(|g| (g.title.to_lowercase(), g.clone()))
             .collect();
@@ -368,8 +368,6 @@ impl SiteClonerEngine {
             }
         }
 
-        // Remove any legacy duplicate reference to tgt_group_by_title if unused
-        let _ = &mut tgt_group_by_title;
         Ok(queue)
     }
 

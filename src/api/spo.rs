@@ -13,9 +13,9 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
-const SPO_JSON_ACCEPT: &str = "application/json;odata=nometadata";
-const SPO_JSON_CONTENT: &str = "application/json;odata=nometadata";
-const SPO_JSON_VERBOSE: &str = "application/json;odata=verbose";
+pub(crate) const SPO_JSON_ACCEPT: &str = "application/json;odata=nometadata";
+pub(crate) const SPO_JSON_CONTENT: &str = "application/json;odata=nometadata";
+pub(crate) const SPO_JSON_VERBOSE: &str = "application/json;odata=verbose";
 
 #[derive(Clone)]
 pub struct SpoClient {
@@ -24,8 +24,10 @@ pub struct SpoClient {
 }
 
 #[derive(Debug, Deserialize)]
-struct SpoValueList<T> {
-    value: Vec<T>,
+pub(crate) struct SpoValueList<T> {
+    pub(crate) value: Vec<T>,
+    #[serde(rename = "odata.nextLink", alias = "@odata.nextLink", default)]
+    pub(crate) next_link: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,7 +240,7 @@ impl SpoClient {
         user_upn: Option<&str>,
     ) -> Result<Vec<(String, String, Option<String>)>> {
         if let Some(kw) = keyword_filter.map(str::trim).filter(|s| !s.is_empty()) {
-            let clean = kw.replace('\'', "");
+            let clean = kw.replace(['\'', '"'], "");
             let kql = format!("contentclass:STS_Site AND ({}* OR Path:*{})", clean, clean);
             return self
                 .search_sites_with_query(root_site_url, &kql, 0, 500, None)
@@ -288,11 +290,9 @@ impl SpoClient {
         );
 
         let mut dedup: HashMap<String, (String, String, Option<String>)> = HashMap::new();
-        for list in [res_default, res_recent, res_user] {
-            if let Ok(rows) = list {
-                for (title, path, desc) in rows {
-                    dedup.entry(path.to_lowercase()).or_insert((title, path, desc));
-                }
+        for rows in [res_default, res_recent, res_user].into_iter().flatten() {
+            for (title, path, desc) in rows {
+                dedup.entry(path.to_lowercase()).or_insert((title, path, desc));
             }
         }
         Ok(dedup.into_values().collect())

@@ -17,13 +17,29 @@ impl Database {
         let path = Self::default_db_path()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            }
         }
         let conn = Connection::open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        }
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
         db.init_schema()?;
         Ok(db)
+    }
+
+    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SQLite connection mutex poisoned"))
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -44,7 +60,7 @@ impl Database {
     }
 
     fn init_schema(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS transactions (
@@ -94,7 +110,7 @@ impl Database {
         summary: &str,
     ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO transactions (created_at, actor_upn, site_url, site_title, source, note, status, summary)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'IN_PROGRESS', ?7)",
@@ -116,7 +132,7 @@ impl Database {
         error_message: Option<&str>,
     ) -> Result<i64> {
         let rev_json = serde_json::to_string(reverse_payload)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO transaction_operations
              (transaction_id, seq_order, op_type, target_label, forward_payload, reverse_payload, status, error_message)
@@ -141,7 +157,7 @@ impl Database {
         } else {
             None
         };
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         if let Some(rev_time) = reverted_at {
             conn.execute(
                 "UPDATE transactions SET status = ?1, reverted_at = ?2 WHERE id = ?3",
@@ -162,7 +178,7 @@ impl Database {
         status: &str,
         error_message: Option<&str>,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "UPDATE transaction_operations SET status = ?1, error_message = ?2 WHERE id = ?3",
             params![status, error_message, op_id],
@@ -175,7 +191,7 @@ impl Database {
         site_url_filter: Option<&str>,
         limit: usize,
     ) -> Result<Vec<TransactionRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut out = Vec::new();
 
         if let Some(site_url) = site_url_filter {
@@ -206,7 +222,7 @@ impl Database {
     }
 
     pub fn get_transaction(&self, transaction_id: i64) -> Result<Option<TransactionRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, created_at, actor_upn, site_url, site_title, source, note, status, reverted_at, summary
              FROM transactions
@@ -225,7 +241,7 @@ impl Database {
         &self,
         transaction_id: i64,
     ) -> Result<Vec<TransactionOpRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, transaction_id, seq_order, op_type, target_label, forward_payload, reverse_payload, status, error_message
              FROM transaction_operations
@@ -254,7 +270,7 @@ impl Database {
 
     pub fn save_cached_sites(&self, sites: &[SpoSite]) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn()?;
         let tx = conn.transaction()?;
         if sites.len() > 1 {
             tx.execute("DELETE FROM cached_sites", [])?;
@@ -285,7 +301,7 @@ impl Database {
     }
 
     pub fn load_cached_sites(&self) -> Result<Vec<SpoSite>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
             "SELECT url, title, description, role_json, is_site_admin
              FROM cached_sites

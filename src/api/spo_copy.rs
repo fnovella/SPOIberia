@@ -1,4 +1,4 @@
-use crate::api::spo::SpoClient;
+use crate::api::spo::{SpoClient, SpoValueList, SPO_JSON_ACCEPT, SPO_JSON_CONTENT};
 use crate::api::{check_json_response, send_with_retry};
 use crate::models::{FolderPermissionEntry, SpoFolder};
 use anyhow::{anyhow, Result};
@@ -6,21 +6,11 @@ use serde::Deserialize;
 use serde_json::json;
 use url::Url;
 
-const SPO_JSON_ACCEPT: &str = "application/json;odata=nometadata";
-const SPO_JSON_CONTENT: &str = "application/json;odata=nometadata";
-
 #[derive(Debug, Clone)]
 pub struct LibraryRootItem {
     pub name: String,
     pub server_relative_url: String,
     pub is_folder: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct SpoValueList<T> {
-    value: Vec<T>,
-    #[serde(rename = "odata.nextLink", alias = "@odata.nextLink")]
-    next_link: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +217,10 @@ impl SpoClient {
             }
 
             let page: SpoValueList<RawListItemUniqueCheck> = resp.json().await?;
+            if let Some(ref nl) = page.next_link {
+                let expected_origin = Self::extract_origin(base)?;
+                crate::api::validate_next_link(&expected_origin, nl)?;
+            }
             next_url = page.next_link;
 
             for item in page.value {

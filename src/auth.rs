@@ -5,10 +5,14 @@ use rand::{ distributions::Alphanumeric, Rng };
 use serde::{ Deserialize, Serialize };
 use sha2::{ Digest, Sha256 };
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{ AsyncReadExt, AsyncWriteExt };
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use url::Url;
 
 /// Legacy Microsoft Azure CLI Public Client ID (blocked by SharePoint Online when using `user_impersonation`).
@@ -16,10 +20,19 @@ pub const LEGACY_AZURE_CLI_CLIENT_ID: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b
 /// Default Public Client ID (admin-consented in the tenant for Microsoft Graph + SharePoint Online `AllSites.FullControl`).
 pub const DEFAULT_CLIENT_ID: &str = "6cdea627-9710-4946-9544-afa7d24fd12f";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CachedAccessToken {
     pub access_token: String,
     pub expires_at: DateTime<Utc>,
+}
+
+impl fmt::Debug for CachedAccessToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedAccessToken")
+            .field("access_token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl CachedAccessToken {
@@ -28,7 +41,7 @@ impl CachedAccessToken {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AuthSession {
     pub tenant_id: String,
     pub client_id: String,
@@ -37,6 +50,20 @@ pub struct AuthSession {
     pub root_site_url: Option<String>,
     pub refresh_token: String,
     pub tokens: HashMap<String, CachedAccessToken>, // resource -> token
+}
+
+impl fmt::Debug for AuthSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthSession")
+            .field("tenant_id", &self.tenant_id)
+            .field("client_id", &self.client_id)
+            .field("user_upn", &self.user_upn)
+            .field("user_display_name", &self.user_display_name)
+            .field("root_site_url", &self.root_site_url)
+            .field("refresh_token", &"[REDACTED]")
+            .field("tokens", &self.tokens)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,19 +93,38 @@ struct TokenErrorResponse {
 pub struct AuthManager {
     http: reqwest::Client,
     session_path: PathBuf,
+    refresh_lock: Arc<Mutex<()>>,
 }
 
 impl AuthManager {
     pub fn new() -> Result<Self> {
         let config_dir = Self::config_dir()?;
         fs::create_dir_all(&config_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700));
+        }
         let session_path = config_dir.join("session.json");
         let http = reqwest::Client
             ::builder()
             .user_agent(concat!("spoiberia/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
-        Ok(Self { http, session_path })
+        Ok(Self {
+            http,
+            session_path,
+            refresh_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_session_path(session_path: PathBuf) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            session_path,
+            refresh_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     pub fn config_dir() -> Result<PathBuf> {
@@ -104,6 +150,18 @@ impl AuthManager {
         Ok(base.join("spoiberia"))
     }
 
+    /// Validate that a tenant ID or domain contains only safe hostname/GUID characters.
+    fn is_valid_tenant_segment(s: &str) -> bool {
+        !s.is_empty()
+            && !s.starts_with('.')
+            && !s.ends_with('.')
+            && !s.starts_with('-')
+            && !s.ends_with('-')
+            && !s.contains("..")
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    }
+
     /// Parse an email address (`user@domain.com`), domain (`domain.com`), or tenant GUID into `(domain_or_tenant, optional_login_hint)`.
     pub fn parse_tenant_or_email(input: &str) -> Option<(String, Option<String>)> {
         let trimmed = input.trim();
@@ -117,10 +175,17 @@ impl AuthManager {
         }
         if let Some((local, domain)) = trimmed.split_once('@') {
             let domain = domain.trim();
-            if local.is_empty() || domain.is_empty() || domain.contains('@') {
+            if local.is_empty()
+                || domain.is_empty()
+                || domain.contains('@')
+                || !Self::is_valid_tenant_segment(domain)
+            {
                 return None;
             }
             return Some((domain.to_ascii_lowercase(), Some(trimmed.to_string())));
+        }
+        if !Self::is_valid_tenant_segment(trimmed) {
+            return None;
         }
         Some((trimmed.to_string(), None))
     }
@@ -302,15 +367,45 @@ impl AuthManager {
     pub fn save_session(&self, session: &AuthSession) -> Result<()> {
         if let Some(parent) = self.session_path.parent() {
             fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            }
         }
         let json = serde_json::to_string_pretty(session)?;
-        fs::write(&self.session_path, json)?;
+        let tmp_name = format!(
+            "{}.tmp.{}",
+            self.session_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("session.json"),
+            std::process::id()
+        );
+        let tmp_path = self.session_path.with_file_name(tmp_name);
+
+        let mut opts = fs::OpenOptions::new();
+        opts.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        {
+            let mut f = opts.open(&tmp_path)?;
+            f.write_all(json.as_bytes())?;
+            f.sync_all()?;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&self.session_path)?.permissions();
-            perms.set_mode(0o600);
-            let _ = fs::set_permissions(&self.session_path, perms);
+            fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600))?;
+        }
+        fs::rename(&tmp_path, &self.session_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.session_path, fs::Permissions::from_mode(0o600))?;
         }
         Ok(())
     }
@@ -413,7 +508,11 @@ impl AuthManager {
             }
         }
 
-        let html_body = if code.is_some() {
+        let state_ok = error_msg.is_none()
+            && returned_state.as_deref() == Some(state.as_str())
+            && code.is_some();
+
+        let html_body = if state_ok {
             "<html><head><meta charset='utf-8'><title>SPOIberia - Autenticación Completada</title></head>\
             <body style='font-family:sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;'>\
             <div style='background:#1e293b;padding:32px;border-radius:12px;border:1px solid #334155;text-align:center;'>\
@@ -578,6 +677,7 @@ impl AuthManager {
 
     /// Obtain a valid access token for a given resource base URL (e.g. `https://graph.microsoft.com` or `https://contoso.sharepoint.com`).
     pub async fn get_token_for_resource(&self, resource_origin: &str) -> Result<String> {
+        let _guard = self.refresh_lock.lock().await;
         let normalized = resource_origin.trim_end_matches('/').to_string();
         let mut session = self
             .load_session()?
@@ -652,6 +752,15 @@ impl AuthManager {
         let parsed = Url::parse(site_url).with_context(||
             format!("URL de sitio inválida: {}", site_url)
         )?;
+        if parsed.scheme() != "https" {
+            return Err(anyhow!("La URL del sitio SharePoint debe usar HTTPS: {}", site_url));
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(anyhow!(
+                "La URL del sitio SharePoint no puede contener credenciales embebidas: {}",
+                site_url
+            ));
+        }
         let host = parsed
             .host_str()
             .ok_or_else(|| anyhow!("URL de sitio sin host: {}", site_url))?;
@@ -785,5 +894,78 @@ mod tests {
             "issuer": "https://sts.windows.net/{tenantid}/"
         });
         assert_eq!(AuthManager::extract_tenant_guid_from_oidc(&common_placeholder), None);
+    }
+
+    #[test]
+    fn test_parse_tenant_or_email_rejects_injection() {
+        assert_eq!(
+            AuthManager::parse_tenant_or_email("contoso.onmicrosoft.com"),
+            Some(("contoso.onmicrosoft.com".to_string(), None))
+        );
+        assert_eq!(
+            AuthManager::parse_tenant_or_email("user@contoso.com"),
+            Some(("contoso.com".to_string(), Some("user@contoso.com".to_string())))
+        );
+        assert_eq!(AuthManager::parse_tenant_or_email("contoso.com/evil?x=1"), None);
+        assert_eq!(AuthManager::parse_tenant_or_email("contoso.com#frag"), None);
+        assert_eq!(AuthManager::parse_tenant_or_email(".."), None);
+        assert_eq!(AuthManager::parse_tenant_or_email(""), None);
+    }
+
+    #[test]
+    fn test_session_debug_redacts_tokens() {
+        let session = AuthSession {
+            tenant_id: "contoso.com".into(),
+            client_id: DEFAULT_CLIENT_ID.into(),
+            user_upn: Some("alice@contoso.com".into()),
+            user_display_name: Some("Alice".into()),
+            root_site_url: None,
+            refresh_token: "super-secret-refresh-token".into(),
+            tokens: HashMap::from([(
+                "https://graph.microsoft.com/.default".into(),
+                CachedAccessToken {
+                    access_token: "super-secret-access-token".into(),
+                    expires_at: Utc::now() + Duration::hours(1),
+                },
+            )]),
+        };
+        let dbg = format!("{:?}", session);
+        assert!(!dbg.contains("super-secret-refresh-token"));
+        assert!(!dbg.contains("super-secret-access-token"));
+        assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn test_get_spo_token_rejects_non_https_and_userinfo() {
+        let dir = std::env::temp_dir().join(format!("spo_auth_test_{}", std::process::id()));
+        let auth = AuthManager::with_session_path(dir.join("session.json"));
+        assert!(auth.get_spo_token_for_url("http://contoso.sharepoint.com").await.is_err());
+        assert!(auth
+            .get_spo_token_for_url("https://user:pass@contoso.sharepoint.com")
+            .await
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_session_sets_0600_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("spo_auth_perm_{}", std::process::id()));
+        let session_path = dir.join("session.json");
+        let auth = AuthManager::with_session_path(session_path.clone());
+        let session = AuthSession {
+            tenant_id: "contoso.com".into(),
+            client_id: DEFAULT_CLIENT_ID.into(),
+            user_upn: Some("alice@contoso.com".into()),
+            user_display_name: Some("Alice".into()),
+            root_site_url: None,
+            refresh_token: "rt".into(),
+            tokens: HashMap::new(),
+        };
+        auth.save_session(&session).unwrap();
+        let mode = std::fs::metadata(&session_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
